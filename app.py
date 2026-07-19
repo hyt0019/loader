@@ -234,32 +234,74 @@ def build_figure(packer, highlight_categories=None, z_ceiling_mm=None):
 #                           导出：Excel / JSON                                 #
 # --------------------------------------------------------------------------- #
 def build_dataframe(packer):
+    """明细装箱清单：按装载顺序列出每一件货的原始规格、摆放朝向与落位坐标。"""
     rows = []
     for (x, y, z, l, w, h), info in sorted(zip(packer.packing_plan, packer.box_colors),
                                            key=lambda it: it[1]['number']):
+        dl, dw, dh = info['original_dimensions']
         rows.append({
-            '箱号': info['number'], '类别': info['input_order'] + 1, '类型': info['type'],
-            '位置X(m)': x / MM, '位置Y(m)': y / MM, '位置Z(m)': z / MM,
-            '长L(m)': l / MM, '宽W(m)': w / MM, '高H(m)': h / MM,
+            '装载顺序': info['number'],
+            '类别': info['input_order'] + 1,
+            '类型': TYPE_LABELS.get(str(info['type']), str(info['type'])),
+            '原始规格(长×宽×高 m)': f"{dl:g}×{dw:g}×{dh:g}",
+            '摆放长(m)': l / MM, '摆放宽(m)': w / MM, '摆放高(m)': h / MM,
+            '位置X起点(m)': x / MM, '位置Y起点(m)': y / MM, '位置Z起点(m)': z / MM,
             '重量(kg)': info['weight'],
         })
     return pd.DataFrame(rows)
 
 
+def build_category_summary(packer):
+    """分类汇总：每种货物的规格、应装/已装/未装数量与体积重量小计。"""
+    placed = {}
+    for info in packer.box_colors:
+        placed[info['input_order']] = placed.get(info['input_order'], 0) + 1
+    rows = []
+    for (l, w, h, n, weight, t, io) in packer.boxes:
+        p = placed.get(io, 0)
+        rows.append({
+            '类别': io + 1,
+            '类型': TYPE_LABELS.get(str(t), str(t)),
+            '规格(长×宽×高 m)': f"{l / MM:g}×{w / MM:g}×{h / MM:g}",
+            '应装数量': n, '已装数量': p, '未装数量': n - p,
+            '单件重量(kg)': weight,
+            '已装重量(kg)': round(weight * p, 1),
+            '单件体积(m³)': round(l * w * h / 1e9, 4),
+            '已装体积(m³)': round(l * w * h * p / 1e9, 3),
+        })
+    return pd.DataFrame(rows)
+
+
 def build_excel_bytes(packer, stats):
-    df = build_dataframe(packer)
+    """导出三页 Excel：汇总 / 分类汇总 / 明细装箱清单。"""
+    from openpyxl.utils import get_column_letter
+    detail = build_dataframe(packer)
+    cats = build_category_summary(packer)
+    used_vol = sum(l * w * h for _, _, _, l, w, h in packer.packing_plan) / 1e9
+    total_weight = sum(info['weight'] for info in packer.box_colors)
     summary = pd.DataFrame({
-        '项目': ['集装箱(长×宽×高 m)', '装入件数', '货物总件数', '空间利用率', '搜索评估次数', '搜索用时(s)'],
+        '项目': ['集装箱(长×宽×高 m)', '集装箱容积(m³)', '装入件数', '货物总件数', '未装件数',
+                 '空间利用率', '已装货物体积(m³)', '已装货物总重(kg)', '搜索评估次数', '搜索用时(s)'],
         '数值': [
-            f"{packer.container[0]/MM:g} × {packer.container[1]/MM:g} × {packer.container[2]/MM:g}",
-            stats['placed'], stats['total'], f"{stats['utilization']*100:.1f}%",
+            f"{packer.container[0] / MM:g} × {packer.container[1] / MM:g} × {packer.container[2] / MM:g}",
+            round(packer.container_volume / 1e9, 3),
+            stats['placed'], stats['total'], stats['total'] - stats['placed'],
+            f"{stats['utilization'] * 100:.1f}%",
+            round(used_vol, 3), round(total_weight, 1),
             stats.get('evaluations', ''), stats.get('seconds', ''),
         ],
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        summary.to_excel(writer, sheet_name='汇总', index=False)
-        df.to_excel(writer, sheet_name='装箱清单', index=False)
+        for name, frame in (('汇总', summary), ('分类汇总', cats), ('装箱清单', detail)):
+            frame.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            for idx, col in enumerate(frame.columns, start=1):
+                sample = [str(col)] + [str(v) for v in frame[col].head(300)]
+                # 中文字符较宽，按 1.7 倍估算列宽
+                width = min(max(max(len(s) for s in sample) * 1.7 + 2, 10), 32)
+                ws.column_dimensions[get_column_letter(idx)].width = width
+            ws.freeze_panes = 'A2'
     return buf.getvalue()
 
 
