@@ -292,9 +292,12 @@ def compute_estimate(container_mm, boxes, threshold):
     """根据当前集装箱与货物清单，计算体积/重量预估与潜在问题（不依赖界面）。"""
     cont_vol = container_mm[0] * container_mm[1] * container_mm[2]
     cargo_vol = sum(b[0] * b[1] * b[2] * b[3] for b in boxes)
-    cd = sorted(container_mm)
-    oversized = [b for b in boxes
-                 if not all(sorted((b[0], b[1], b[2]))[i] <= cd[i] for i in range(3))]
+    if cont_vol > 0:
+        cd = sorted(container_mm)
+        oversized = [b for b in boxes
+                     if not all(sorted((b[0], b[1], b[2]))[i] <= cd[i] for i in range(3))]
+    else:
+        oversized = []  # 集装箱尚未填写，暂不判断超尺寸
     heavy = [b for b in boxes if b[4] > threshold]
     return {
         'pieces': sum(b[3] for b in boxes),
@@ -550,16 +553,16 @@ def main():
     # ---- 会话状态初始化（默认给一份示例，便于上手）----
     st.session_state.setdefault('next_id', 0)
     if 'rows' not in st.session_state:
-        st.session_state.rows = sample_rows()
-    for _k, _v in (('cL', 2.35), ('cW', 5.8), ('cH', 2.35)):
-        st.session_state.setdefault(_k, _v)
+        st.session_state.rows = []  # 默认空清单，用户可手动添加或点“载入示例”
+    for _k in ('cL', 'cW', 'cH'):
+        st.session_state.setdefault(_k, None)  # 默认留空
 
     with st.container(border=True):
         section_title(IC_BOX, '集装箱尺寸（米）')
         cc1, cc2, cc3 = st.columns(3)
-        cL = cc1.number_input('长 Length', min_value=0.0, value=float(st.session_state.cL), step=0.01, format='%.3f')
-        cW = cc2.number_input('宽 Width', min_value=0.0, value=float(st.session_state.cW), step=0.01, format='%.3f')
-        cH = cc3.number_input('高 Height', min_value=0.0, value=float(st.session_state.cH), step=0.01, format='%.3f')
+        cL = cc1.number_input('长 Length', min_value=0.0, value=st.session_state.cL, step=0.01, format='%.3f')
+        cW = cc2.number_input('宽 Width', min_value=0.0, value=st.session_state.cW, step=0.01, format='%.3f')
+        cH = cc3.number_input('高 Height', min_value=0.0, value=st.session_state.cH, step=0.01, format='%.3f')
         st.session_state.cL, st.session_state.cW, st.session_state.cH = cL, cW, cH
 
     with st.container(border=True):
