@@ -192,26 +192,33 @@ class ContainerPacker:
 
         ordered_types: [(l,w,h,n,weight,t,input_order), ...] 按放置先后排列
         orient_map:    {input_order: [orientation(mm三元组), ...]}
+        装不下的单件会被【跳过】并继续装后面的货物，以最大化装载体积；
+        同一类中若有一件放不下，其余同尺寸同类件也必然放不下，直接跳过以节省时间。
         返回 (是否全部装入, 已装数量, 已用体积)
         """
         self._reset_state()
         number = 1
         type_count = {}
         used_volume = 0
+        all_placed = True
         for (l, w, h, n, weight, t, io) in ordered_types:
             type_count[t] = type_count.get(t, 0) + 1
             orients = orient_map[io]
+            exhausted = False
             for _ in range(n):
                 best = None
-                for (px, py, pz) in sorted(self.points, key=lambda p: (p[2], p[1], p[0])):
-                    for (bl, bw, bh) in orients:
-                        if self.can_place(px, py, pz, bl, bw, bh, weight):
-                            best = (px, py, pz, bl, bw, bh)
+                if not exhausted:
+                    for (px, py, pz) in sorted(self.points, key=lambda p: (p[2], p[1], p[0])):
+                        for (bl, bw, bh) in orients:
+                            if self.can_place(px, py, pz, bl, bw, bh, weight):
+                                best = (px, py, pz, bl, bw, bh)
+                                break
+                        if best:
                             break
-                    if best:
-                        break
                 if best is None:
-                    return False, len(self.packing_plan), used_volume
+                    all_placed = False
+                    exhausted = True
+                    continue
                 self._place(*best)
                 used_volume += best[3] * best[4] * best[5]
                 if record:
@@ -224,7 +231,34 @@ class ContainerPacker:
                         'original_dimensions': (l / MM, w / MM, h / MM),
                     })
                 number += 1
-        return True, len(self.packing_plan), used_volume
+        return all_placed, len(self.packing_plan), used_volume
+
+    def _solve(self, swap_xy, ordered_types, orient_map, record=True):
+        """在（可选长宽对调的）坐标系中求解，再把结果映射回原坐标系。
+
+        长宽对调只是换个观察轴，物理上是同一个集装箱，但会显著影响贪心结果，
+        因此两种朝向都尝试、取更优者。
+        """
+        original = self.container
+        if swap_xy:
+            self.container = (original[1], original[0], original[2])
+        try:
+            ok, placed, used = self._run_policy(ordered_types, orient_map, record=record)
+        finally:
+            self.container = original
+        if swap_xy:
+            self.packing_plan = [(y, x, z, w, l, h) for (x, y, z, l, w, h) in self.packing_plan]
+        return ok, placed, used
+
+    def _deterministic_policies(self):
+        """一组确定性策略（不同排序 / 朝向来源），用于组合搜索。"""
+        return [
+            self._policy_original(),
+            self._policy_sorted(lambda b: (max(b[0], b[1], b[2]), b[0] * b[1] * b[2])),
+            self._policy_sorted(lambda b: (b[0] * b[1] * b[2], max(b[0], b[1], b[2]))),
+            self._policy_sorted(lambda b: (b[0] * b[1], b[2])),
+            self._policy_sorted(lambda b: (b[2], b[0] * b[1])),
+        ]
 
     # ---------------- 策略构造 ---------------- #
     def _policy_original(self):
@@ -253,22 +287,28 @@ class ContainerPacker:
 
     # ---------------- 对外：标准版 ---------------- #
     def pack(self):
-        """标准版：复现最初版逐箱决策。返回 (是否装入, 说明)。"""
-        if sum(l * w * h * n for l, w, h, n, *_ in self.boxes) > self.container_volume:
-            return False, "箱子总体积超过集装箱体积"
-        ordered, orient_map = self._policy_original()
-        ok, placed, _ = self._run_policy(ordered, orient_map, record=True)
-        if ok:
-            return True, "成功"
-        # 找出装不下的那一类，给出可读原因
-        fail = None
-        for b in ordered:
-            if b[3] > 0:
-                fail = b
+        """标准版：确定性策略组合（长宽两种朝向 × 多种排序），取装载体积最大者。
+
+        对坐标轴顺序与排序方式做穷举，避免单一贪心因朝向/顺序不巧而崩坏。
+        返回 (是否全部装入, 说明)。
+        """
+        total = self.total_units
+        best_fit, best = None, None
+        for swap in (False, True):
+            for pol in self._deterministic_policies():
+                _, placed, used = self._solve(swap, pol[0], pol[1], record=False)
+                fit = (used, placed)
+                if best_fit is None or fit > best_fit:
+                    best_fit, best = fit, (swap, pol)
+                if placed == total:
+                    break
+            if best_fit[1] == total:
                 break
-        l, w, h = (fail[0], fail[1], fail[2]) if fail else (0, 0, 0)
-        return False, (f"箱子尺寸 {format_decimal(l)} * {format_decimal(w)} * {format_decimal(h)} 无法找到合适的位置"
-                       f"（已装入 {placed}/{self.total_units} 件）")
+        _, placed, used = self._solve(best[0], best[1][0], best[1][1], record=True)
+        if placed == total:
+            return True, "成功"
+        return False, (f"已尽最大努力装载：装入 {placed}/{total} 件，"
+                       f"空间利用率 {used / self.container_volume * 100:.1f}%（其余货物放不下）")
 
     # ---------------- 对外：增强版（遗传/随机重启搜索） ---------------- #
     def pack_enhanced(self, time_budget=60.0, rng_seed=20260719,
@@ -279,111 +319,90 @@ class ContainerPacker:
         返回 (是否装入, 说明, 统计信息 dict)。
         """
         total = self.total_units
-        if sum(l * w * h * n for l, w, h, n, *_ in self.boxes) > self.container_volume:
-            return False, "箱子总体积超过集装箱体积", {}
-
         num_types = len(self.boxes)
         rng = random.Random(rng_seed)
-
-        # --- 评估函数：返回适应度 (装入数, 已用体积) 越大越好 ---
-        def evaluate(ordered, orient_map):
-            ok, placed, used = self._run_policy(ordered, orient_map, record=False)
-            return (placed, used), ok
-
-        # --- 确定性种子（含标准版，保证下限） ---
-        seeds = [
-            self._policy_original(),
-            self._policy_sorted(lambda b: (max(b[0], b[1], b[2]), b[0] * b[1] * b[2])),
-            self._policy_sorted(lambda b: (b[0] * b[1] * b[2], max(b[0], b[1], b[2]))),
-            self._policy_sorted(lambda b: (b[0] * b[1], b[2])),
-        ]
-        best_fit = None
-        best_policy = None
+        t0 = time.time()
         evals = 0
-        for pol in seeds:
-            fit, _ = evaluate(*pol)
+        best_fit = None
+        best = None  # (swap_xy, (ordered_types, orient_map))
+
+        # --- 评估：适应度 = (已装体积, 已装件数)，以“空间利用率最大”为首要目标 ---
+        def ev(swap, pol):
+            nonlocal evals, best_fit, best
+            _, placed, used = self._solve(swap, pol[0], pol[1], record=False)
             evals += 1
+            fit = (used, placed)
             if best_fit is None or fit > best_fit:
-                best_fit, best_policy = fit, pol
-            if best_fit[0] >= total:
+                best_fit, best = fit, (swap, pol)
+            return fit
+
+        # --- 确定性种子：长宽两种朝向 × 多种排序（保证不劣于标准版）---
+        for swap in (False, True):
+            for pol in self._deterministic_policies():
+                ev(swap, pol)
+                if best_fit[1] >= total:
+                    break
+            if best_fit[1] >= total:
                 break
 
-        t0 = time.time()
-
-        # --- 遗传搜索（仅当种子未达 100% 时启动） ---
-        if best_fit[0] < total and num_types >= 2:
+        # --- 遗传搜索（种子未达 100% 时启动；长宽朝向也作为基因参与进化）---
+        if best_fit[1] < total:
 
             def random_genome():
                 perm = list(range(num_types))
                 rng.shuffle(perm)
                 genes = {b[6]: rng.randrange(6) for b in self.boxes}
-                return (perm, genes)
+                return (rng.random() < 0.5, perm, genes)
 
-            def genome_fit(genome):
-                pol = self._policy_from_genome(genome[0], genome[1])
-                fit, _ = evaluate(*pol)
-                return fit
+            def genome_fit(g):
+                return ev(g[0], self._policy_from_genome(g[1], g[2]))
 
             def crossover(a, b):
-                # 顺序交叉(OX) 处理类别排列
                 n = num_types
-                i, j = sorted(rng.sample(range(n), 2)) if n >= 2 else (0, 0)
+                if n >= 2:
+                    i, j = sorted(rng.sample(range(n), 2))
+                else:
+                    i = j = 0
                 child_perm = [None] * n
-                child_perm[i:j + 1] = a[0][i:j + 1]
-                fill = [x for x in b[0] if x not in child_perm]
+                child_perm[i:j + 1] = a[1][i:j + 1]
+                fill = [x for x in b[1] if x not in child_perm]
                 k = 0
                 for p in range(n):
                     if child_perm[p] is None:
                         child_perm[p] = fill[k]
                         k += 1
-                # 朝向基因均匀交叉
-                genes = {bx[6]: (a[1][bx[6]] if rng.random() < 0.5 else b[1][bx[6]]) for bx in self.boxes}
-                return (child_perm, genes)
+                genes = {bx[6]: (a[2][bx[6]] if rng.random() < 0.5 else b[2][bx[6]]) for bx in self.boxes}
+                return (a[0] if rng.random() < 0.5 else b[0], child_perm, genes)
 
-            def mutate(genome):
-                perm = list(genome[0])
-                genes = dict(genome[1])
+            def mutate(g):
+                swap, perm, genes = g[0], list(g[1]), dict(g[2])
+                if rng.random() < 0.25:
+                    swap = not swap
                 if rng.random() < 0.7 and num_types >= 2:
                     i, j = rng.sample(range(num_types), 2)
                     perm[i], perm[j] = perm[j], perm[i]
                 if rng.random() < 0.7:
                     bx = self.boxes[rng.randrange(num_types)]
                     genes[bx[6]] = rng.randrange(6)
-                return (perm, genes)
+                return (swap, perm, genes)
 
-            # 初始化种群
             pop = []
-            for _ in range(population):
+            while len(pop) < population and best_fit[1] < total and time.time() - t0 < time_budget:
                 g = random_genome()
                 pop.append((genome_fit(g), g))
-                evals += 1
-                fit = pop[-1][0]
-                if fit > best_fit:
-                    best_fit = fit
-                    best_policy = self._policy_from_genome(g[0], g[1])
-                if best_fit[0] >= total or time.time() - t0 > time_budget:
-                    break
 
-            # 进化循环
-            while best_fit[0] < total and time.time() - t0 < time_budget:
+            while pop and best_fit[1] < total and time.time() - t0 < time_budget:
                 pop.sort(key=lambda it: it[0], reverse=True)
-                elite = pop[:max(2, population // 5)]
-                new_pop = list(elite)
+                new_pop = pop[:max(2, population // 5)]
                 while len(new_pop) < population and time.time() - t0 < time_budget:
-                    # 锦标赛选择
                     p1 = max(rng.sample(pop, min(3, len(pop))), key=lambda it: it[0])[1]
                     p2 = max(rng.sample(pop, min(3, len(pop))), key=lambda it: it[0])[1]
                     child = mutate(crossover(p1, p2)) if rng.random() < 0.9 else random_genome()
-                    fit = genome_fit(child)
-                    evals += 1
-                    new_pop.append((fit, child))
-                    if fit > best_fit:
-                        best_fit = fit
-                        best_policy = self._policy_from_genome(child[0], child[1])
+                    new_pop.append((genome_fit(child), child))
                 pop = new_pop
 
         # --- 用最优策略正式装箱（生成编号/颜色信息） ---
-        ok, placed, used = self._run_policy(best_policy[0], best_policy[1], record=True)
+        _, placed, used = self._solve(best[0], best[1][0], best[1][1], record=True)
         stats = {
             'placed': placed,
             'total': total,
@@ -397,8 +416,8 @@ class ContainerPacker:
                   f"装入 {placed}/{total}，空间利用率 {stats['utilization']*100:.1f}%")
         if placed == total:
             return True, "成功", stats
-        l, w, h = 0, 0, 0
-        return False, f"已尽力搜索，装入 {placed}/{total} 件（仍有货物放不下）", stats
+        return False, (f"已尽最大努力搜索：装入 {placed}/{total} 件，"
+                       f"空间利用率 {stats['utilization'] * 100:.1f}%（其余货物放不下）"), stats
 
     # --------------------------------------------------------------------- #
     #                              可视化                                    #
