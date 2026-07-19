@@ -6,7 +6,10 @@ textColor = "#0F172A"
 font = "sans serif"
 
 [client]
-toolbarMode = "minimal"
+# 对访客隐藏开发者选项（Rerun / Clear cache / 源码入口等）
+toolbarMode = "viewer"
+# 出错时只显示简短提示，不向访客暴露堆栈与代码片段
+showErrorDetails = false
 
 [server]
 runOnSave = true
