@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+build_env/
+web_env/
+
+# ---- PyInstaller 打包产物 ----
+build/
+dist/
+*.spec
+
+# ---- 程序运行生成的结果（非源码，可再生）----
+packing_plan*.json
+data_hash.txt
+
+# ---- IDE / 编辑器 ----
+.idea/
+.vscode/
+
+# ---- Streamlit 机密（如有 API key 等，切勿上传）----
+.streamlit/secrets.toml
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
