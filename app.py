@@ -221,8 +221,11 @@ def build_figure(packer, highlight_categories=None, z_ceiling_mm=None):
             xaxis_title='长 Length (m)', yaxis_title='宽 Width (m)', zaxis_title='高 Height (m)',
             aspectmode='data',
         ),
-        margin=dict(l=0, r=0, t=30, b=0), height=650,
-        legend=dict(orientation='h', yanchor='bottom', y=1.0, xanchor='left', x=0),
+        # 图例移到图表下方：顶部让给 Plotly 工具条（缩放/复位/相机/全屏），避免重叠
+        margin=dict(l=0, r=0, t=8, b=0), height=700,
+        legend=dict(orientation='h', yanchor='top', y=-0.02, xanchor='left', x=0,
+                    bgcolor='rgba(255,255,255,0.75)', bordercolor='#E7ECF4', borderwidth=1,
+                    font=dict(size=12)),
     )
     return fig
 
@@ -706,7 +709,8 @@ def main():
                               step=round(max_h / 20, 3) or 0.01,
                               help='从下往上逐层查看装载过程；拉到最高即显示全部。')
         st.plotly_chart(build_figure(packer, set(st.session_state.hl), z_ceiling_mm=to_mm(z_ceiling)),
-                        use_container_width=True)
+                        use_container_width=True,
+                        config={'displaylogo': False})
 
     with st.container(border=True):
         section_title(IC_LIST, '装箱清单')
