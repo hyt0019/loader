@@ -293,7 +293,8 @@ def build_excel_bytes(packer, stats):
     })
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-        for name, frame in (('汇总', summary), ('分类汇总', cats), ('装箱清单', detail)):
+        # 「装箱清单」放首位：打开文件即是与页面一致的明细清单
+        for name, frame in (('装箱清单', detail), ('分类汇总', cats), ('汇总', summary)):
             frame.to_excel(writer, sheet_name=name, index=False)
             ws = writer.sheets[name]
             for idx, col in enumerate(frame.columns, start=1):
@@ -302,6 +303,7 @@ def build_excel_bytes(packer, stats):
                 width = min(max(max(len(s) for s in sample) * 1.7 + 2, 10), 32)
                 ws.column_dimensions[get_column_letter(idx)].width = width
             ws.freeze_panes = 'A2'
+        writer.book.active = 0  # 打开 Excel 时定位到「装箱清单」
     return buf.getvalue()
 
 
