@@ -648,7 +648,8 @@ def section_title(icon_svg, text):
 
 def render_guide():
     """使用说明：这是什么 + 怎么用。默认收起，不干扰熟练用户。"""
-    with st.expander('📖 使用说明 —— 这是什么、怎么用（首次使用请先看这里）', expanded=False):
+    with st.expander('使用说明 —— 这是什么、怎么用（首次使用请先看这里）',
+                     expanded=False, icon=':material/menu_book:'):
         st.markdown("""
 #### 这是什么
 一个**集装箱三维装箱计算工具**。你告诉它集装箱的尺寸和要装的货物（尺寸、数量、重量、类型），
@@ -664,10 +665,10 @@ def render_guide():
 
 1. **填集装箱尺寸**：在「集装箱尺寸」填长、宽、高（单位：米）。常见 20 尺柜内径约 `5.9 × 2.35 × 2.39`。
 2. **填货物清单**：在表格里逐行填 长/宽/高/数量/重量，类型用下拉选**木箱 / 纸箱 / 托盘**。
-   - 每行最右侧 🗑 可删除该行；下方有 **➕ 添加一行 / 🧹 清空清单 / ↺ 载入示例**。
-   - 也可展开「📥 从文件/文本导入」，上传旧的 txt/xlsx 或粘贴文本批量导入。
-   - **录一半要走？** 点清单下方的「**⬇ 导出货物清单**」（可选 **txt** 或 **xlsx**）保存到本地，
-     下次再用「📥 从文件/文本导入」读回来接着填，**不用重新录入**。
+   - 每行最右侧 🗑 可删除该行；下方有 **添加一行 / 清空清单 / 载入示例**。
+   - 也可展开「**从文件 / 文本导入**」，上传旧的 txt/xlsx 或粘贴文本批量导入。
+   - **录一半要走？** 展开「**导出当前清单**」，选 **txt** 或 **xlsx** 导出到本地；
+     下次再用「**从文件 / 文本导入**」读回来接着填，**不用重新录入**。
 3. **设参数**（左侧栏）：
    - **重量阈值(kg)**：超过它的货物不允许被叠压。比如填 100，则 950kg 的托盘只能落地。
    - **计算模式**：**标准版**快速稳定；**增强版**用遗传搜索反复优化，装载率更高但更慢（可设搜索时间上限）。
@@ -686,9 +687,9 @@ def render_guide():
 ---
 
 #### 常见问题
-- **货物太多，一次录不完？** 随时点「⬇ 导出货物清单」存成 txt 或 xlsx，下次导入即可接着录，进度不丢。
+- **货物太多，一次录不完？** 随时展开「导出当前清单」存成 txt 或 xlsx，下次导入即可接着录，进度不丢。
   导出的文件带中文注释但**可以原样再导入**，也能用记事本/Excel 直接编辑。
-- **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json`，点「📂 载入方案查看」即可重现，无需重算。
+- **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json`，点「载入方案查看」即可重现，无需重算。
 - **提示装不下怎么办？** 程序会尽量多装并告诉你装了多少、利用率多少。可尝试：改用增强版、加大集装箱尺寸、或减少货量。
 - **长宽填反了有影响吗？** 没有。程序会自动尝试两种朝向并取更优结果。
 """)
@@ -743,7 +744,7 @@ def render_cargo_editor():
             else:
                 _confirm_delete(rid)
     if not st.session_state.rows:
-        st.caption('清单为空，点击下方“➕ 添加一行”或“↺ 载入示例”。')
+        st.caption('清单为空，点击下方「添加一行」或「载入示例」开始录入。')
 
 
 # --------------------------------------------------------------------------- #
@@ -776,38 +777,17 @@ def main():
         st.caption('直接在下表修改数值，类型用下拉选择；每行最右侧 🗑 可删除该行（带确认）。')
         render_cargo_editor()
         ac1, ac2, ac3 = st.columns(3)
-        if ac1.button('➕ 添加一行', use_container_width=True):
+        if ac1.button('添加一行', icon=':material/add:', use_container_width=True):
             st.session_state.rows.append(_new_row())
             st.rerun()
-        if ac2.button('🧹 清空清单', use_container_width=True):
+        if ac2.button('清空清单', icon=':material/delete_sweep:', use_container_width=True):
             st.session_state.rows = []
             st.rerun()
-        if ac3.button('↺ 载入示例', use_container_width=True):
+        if ac3.button('载入示例', icon=':material/restart_alt:', use_container_width=True):
             st.session_state.rows = sample_rows()
             st.rerun()
 
-        # ---- 导出货物清单：保存当前录入，下次可直接导入继续填 ----
-        st.divider()
-        st.caption('💾 导出当前录入内容，下次可从「📥 从文件/文本导入」读回来继续编辑，无需重新录入。')
-        ex1, ex2 = st.columns([1, 1])
-        fmt = ex1.radio('导出格式', ['txt', 'xlsx'], horizontal=True, key='cargo_export_fmt')
-        n_valid = len(_valid_rows(st.session_state.rows))
-        if n_valid == 0:
-            ex2.button('⬇ 导出货物清单（清单为空）', disabled=True, use_container_width=True)
-        elif fmt == 'txt':
-            ex2.download_button(
-                f'⬇ 导出货物清单（{n_valid} 类 · txt）',
-                data=build_cargo_txt(container_mm, st.session_state.rows),
-                file_name='货物清单.txt', mime='text/plain', use_container_width=True)
-        else:
-            ex2.download_button(
-                f'⬇ 导出货物清单（{n_valid} 类 · xlsx）',
-                data=build_cargo_xlsx(container_mm, st.session_state.rows),
-                file_name='货物清单.xlsx',
-                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                use_container_width=True)
-
-    with st.expander('📥 从文件/文本导入（可选，导入后会填入上面的清单供核对）'):
+    with st.expander('从文件 / 文本导入（导入后会填入上面的清单供核对）', icon=':material/upload_file:'):
         up = st.file_uploader('上传 txt 或 xlsx', type=['txt', 'xlsx'])
         paste = st.text_area('或粘贴数据文本（第一行集装箱长宽高，第二行种类数，其后每行：长 宽 高 数量 重量 类型）',
                              height=120)
@@ -831,6 +811,26 @@ def main():
             except Exception as e:  # noqa
                 st.error(f'导入失败：{e}')
 
+    with st.expander('导出当前清单（保存录入进度，下次导入即可继续）', icon=':material/download:'):
+        st.caption('导出内容包含集装箱尺寸与全部货物行，可用上方「从文件 / 文本导入」原样读回来继续编辑。')
+        ex1, ex2 = st.columns([1, 1])
+        fmt = ex1.radio('导出格式', ['txt', 'xlsx'], horizontal=True, key='cargo_export_fmt')
+        n_valid = len(_valid_rows(st.session_state.rows))
+        if n_valid == 0:
+            ex2.button('清单为空，暂无可导出内容', disabled=True, use_container_width=True)
+        elif fmt == 'txt':
+            ex2.download_button(
+                f'导出货物清单（{n_valid} 类 · txt）', icon=':material/download:',
+                data=build_cargo_txt(container_mm, st.session_state.rows),
+                file_name='货物清单.txt', mime='text/plain', use_container_width=True)
+        else:
+            ex2.download_button(
+                f'导出货物清单（{n_valid} 类 · xlsx）', icon=':material/download:',
+                data=build_cargo_xlsx(container_mm, st.session_state.rows),
+                file_name='货物清单.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True)
+
     with st.sidebar:
         section_title(IC_GAUGE, '计算参数')
         threshold = st.number_input('重量阈值 (kg)：超过则不可叠放在其他箱子上', value=100.0, step=10.0)
@@ -844,7 +844,7 @@ def main():
         st.divider()
         st.markdown('**查看已保存方案**')
         plan_file = st.file_uploader('导入方案 JSON', type=['json'], label_visibility='collapsed')
-        if st.button('📂 载入方案查看', use_container_width=True):
+        if st.button('载入方案查看', icon=':material/folder_open:', use_container_width=True):
             if plan_file is not None:
                 try:
                     plan = json.loads(plan_file.getvalue().decode('utf-8'))
@@ -886,7 +886,8 @@ def main():
 
     res = st.session_state.get('result')
     if not res:
-        st.info('填好集装箱尺寸与货物清单后，点击左侧「开始计算」。首次使用可展开顶部「📖 使用说明」。')
+        st.info('填好集装箱尺寸与货物清单后，点击左侧「开始计算」。首次使用可展开顶部「使用说明」。',
+                icon=':material/lightbulb:')
         render_footer()
         return
 
@@ -944,11 +945,13 @@ def main():
         section_title(IC_LIST, '装箱清单')
         st.dataframe(build_dataframe(packer), use_container_width=True, height=320)
         d1, d2 = st.columns(2)
-        d1.download_button('⬇ 下载 Excel 装箱清单', data=build_excel_bytes(packer, stats),
+        d1.download_button('下载 Excel 装箱清单', icon=':material/table_view:',
+                           data=build_excel_bytes(packer, stats),
                            file_name='packing_plan.xlsx',
                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                            use_container_width=True)
-        d2.download_button('⬇ 下载 JSON 方案', data=build_json_bytes(packer),
+        d2.download_button('下载 JSON 方案', icon=':material/data_object:',
+                           data=build_json_bytes(packer),
                            file_name='packing_plan.json', mime='application/json',
                            use_container_width=True)
 
