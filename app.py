@@ -28,7 +28,9 @@ from packer_pro import ContainerPacker, MM, to_mm, to_int, to_float
 #                               数据解析                                       #
 # --------------------------------------------------------------------------- #
 def parse_txt(text):
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    # 跳过空行与整行注释（# 开头），使带注释的导出文件可以原样再导入
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and ln.split('#')[0].strip()]
     container = tuple(to_mm(x) for x in lines[0].split('#')[0].strip().split()[:3])
     box_count = int(lines[1].split('#')[0].strip())
     boxes = []
@@ -118,6 +120,55 @@ def rows_to_boxes(rows):
         if l > 0 and w > 0 and h > 0 and n > 0:
             out.append((l, w, h, n, wt, t))
     return out
+
+
+def _valid_rows(rows):
+    return [r for r in rows
+            if to_mm(r['l']) > 0 and to_mm(r['w']) > 0 and to_mm(r['h']) > 0 and to_int(r['n']) > 0]
+
+
+def build_cargo_txt(container_mm, rows):
+    """把当前录入的集装箱+货物清单导出为 txt。
+
+    格式与导入完全一致（行内 # 之后为注释，导入时会自动忽略），
+    因此导出的文件可以直接用「从文件/文本导入」读回来，实现间断录入。
+    """
+    valid = _valid_rows(rows)
+    L, W, H = (c / MM for c in container_mm)
+    lines = [f"{L:g} {W:g} {H:g}    # 集装箱 长 宽 高（米）",
+             f"{len(valid)}    # 货物种类数",
+             "# 以下每行：长 宽 高 数量 重量 类型(0=木箱 1=纸箱 2=托盘)"]
+    for r in valid:
+        code = TYPE_CODES.get(r['type'], '0')
+        label = TYPE_LABELS.get(code, str(r['type']))
+        lines.append(f"{float(r['l']):g} {float(r['w']):g} {float(r['h']):g} "
+                     f"{int(r['n'])} {float(r['wt']):g} {code}    # {label}")
+    return ("\n".join(lines) + "\n").encode('utf-8')
+
+
+def build_cargo_xlsx(container_mm, rows):
+    """把当前录入的集装箱+货物清单导出为 xlsx（同样可直接再导入）。
+
+    第7列的中文类型仅供阅读，导入时会被忽略。
+    """
+    from openpyxl import Workbook
+    from openpyxl.utils import get_column_letter
+    valid = _valid_rows(rows)
+    L, W, H = (c / MM for c in container_mm)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '货物清单'
+    ws.append([L, W, H, None, None, None, '集装箱 长 宽 高（米）'])
+    ws.append([len(valid), None, None, None, None, None, '货物种类数'])
+    for r in valid:
+        code = TYPE_CODES.get(r['type'], '0')
+        ws.append([float(r['l']), float(r['w']), float(r['h']),
+                   int(r['n']), float(r['wt']), code, TYPE_LABELS.get(code, '')])
+    for idx, width in enumerate([12, 12, 12, 10, 12, 10, 26], start=1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # --------------------------------------------------------------------------- #
@@ -615,6 +666,8 @@ def render_guide():
 2. **填货物清单**：在表格里逐行填 长/宽/高/数量/重量，类型用下拉选**木箱 / 纸箱 / 托盘**。
    - 每行最右侧 🗑 可删除该行；下方有 **➕ 添加一行 / 🧹 清空清单 / ↺ 载入示例**。
    - 也可展开「📥 从文件/文本导入」，上传旧的 txt/xlsx 或粘贴文本批量导入。
+   - **录一半要走？** 点清单下方的「**⬇ 导出货物清单**」（可选 **txt** 或 **xlsx**）保存到本地，
+     下次再用「📥 从文件/文本导入」读回来接着填，**不用重新录入**。
 3. **设参数**（左侧栏）：
    - **重量阈值(kg)**：超过它的货物不允许被叠压。比如填 100，则 950kg 的托盘只能落地。
    - **计算模式**：**标准版**快速稳定；**增强版**用遗传搜索反复优化，装载率更高但更慢（可设搜索时间上限）。
@@ -633,6 +686,8 @@ def render_guide():
 ---
 
 #### 常见问题
+- **货物太多，一次录不完？** 随时点「⬇ 导出货物清单」存成 txt 或 xlsx，下次导入即可接着录，进度不丢。
+  导出的文件带中文注释但**可以原样再导入**，也能用记事本/Excel 直接编辑。
 - **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json`，点「📂 载入方案查看」即可重现，无需重算。
 - **提示装不下怎么办？** 程序会尽量多装并告诉你装了多少、利用率多少。可尝试：改用增强版、加大集装箱尺寸、或减少货量。
 - **长宽填反了有影响吗？** 没有。程序会自动尝试两种朝向并取更优结果。
@@ -714,6 +769,7 @@ def main():
         cW = cc2.number_input('宽 Width', min_value=0.0, value=st.session_state.cW, step=0.01, format='%.3f')
         cH = cc3.number_input('高 Height', min_value=0.0, value=st.session_state.cH, step=0.01, format='%.3f')
         st.session_state.cL, st.session_state.cW, st.session_state.cH = cL, cW, cH
+    container_mm = (to_mm(cL), to_mm(cW), to_mm(cH))
 
     with st.container(border=True):
         section_title(IC_LIST, '货物清单')
@@ -729,6 +785,27 @@ def main():
         if ac3.button('↺ 载入示例', use_container_width=True):
             st.session_state.rows = sample_rows()
             st.rerun()
+
+        # ---- 导出货物清单：保存当前录入，下次可直接导入继续填 ----
+        st.divider()
+        st.caption('💾 导出当前录入内容，下次可从「📥 从文件/文本导入」读回来继续编辑，无需重新录入。')
+        ex1, ex2 = st.columns([1, 1])
+        fmt = ex1.radio('导出格式', ['txt', 'xlsx'], horizontal=True, key='cargo_export_fmt')
+        n_valid = len(_valid_rows(st.session_state.rows))
+        if n_valid == 0:
+            ex2.button('⬇ 导出货物清单（清单为空）', disabled=True, use_container_width=True)
+        elif fmt == 'txt':
+            ex2.download_button(
+                f'⬇ 导出货物清单（{n_valid} 类 · txt）',
+                data=build_cargo_txt(container_mm, st.session_state.rows),
+                file_name='货物清单.txt', mime='text/plain', use_container_width=True)
+        else:
+            ex2.download_button(
+                f'⬇ 导出货物清单（{n_valid} 类 · xlsx）',
+                data=build_cargo_xlsx(container_mm, st.session_state.rows),
+                file_name='货物清单.xlsx',
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                use_container_width=True)
 
     with st.expander('📥 从文件/文本导入（可选，导入后会填入上面的清单供核对）'):
         up = st.file_uploader('上传 txt 或 xlsx', type=['txt', 'xlsx'])
@@ -787,7 +864,6 @@ def main():
                 st.warning('请先选择 JSON 方案文件。')
 
     # ---- 实时预估与预警（随表格即时更新，无需点击计算）----
-    container_mm = (to_mm(cL), to_mm(cW), to_mm(cH))
     boxes = rows_to_boxes(st.session_state.rows)
     with st.container(border=True):
         render_live_estimate(container_mm, boxes, threshold)

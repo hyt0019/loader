@@ -527,7 +527,9 @@ def select_file(files):
 def read_input_from_file(file_path):
     if file_path.endswith('.txt'):
         with open(file_path, 'r', encoding='utf-8') as file:
-            lines = [line.strip() for line in file if line.strip()]
+            # 跳过空行与整行注释（# 开头），兼容网页版导出的带注释清单
+            lines = [line.strip() for line in file
+                     if line.strip() and line.split('#')[0].strip()]
         container_parts = lines[0].split('#')[0].strip().split()
         container = tuple(to_mm(x) for x in container_parts[:3])
         box_count = int(lines[1].split('#')[0].strip())
