@@ -575,9 +575,9 @@ FOOTER_HTML = """
 <div class="site-footer">
   <div class="footer-line"></div>
   <div class="footer-inner">
-    <span class="sig-mark">HE</span>
+    <span class="sig-mark">HYT</span>
     <div class="footer-txt">
-      <div class="footer-name">Designed &amp; Built by HE</div>
+      <div class="footer-name">Designed &amp; Built by HYT</div>
       <div class="footer-sub">智能集装箱装箱系统 · CONTAINER LOADING OPTIMIZER</div>
     </div>
   </div>
