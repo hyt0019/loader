@@ -469,24 +469,78 @@ h3, h4 {color:#0F172A; font-weight: 700;}
 /* 侧边栏 */
 section[data-testid="stSidebar"] {background:#FFFFFF; border-right:1px solid #E7ECF4;}
 
-/* 角落签名 */
-.signature {position: fixed; right: 22px; bottom: 18px; z-index: 1000;
-    pointer-events: none; display: flex; align-items: center; gap: 9px;}
-.sig-by {font-size: 10.5px; letter-spacing: 1.6px; color: #8091A7; font-weight: 600;
-    background: rgba(255,255,255,.78); border: 1px solid #E7ECF4; border-radius: 8px;
-    padding: 5px 9px;}
-.sig-mark {font-weight: 700; font-size: 16px; letter-spacing: 1px; color: #fff;
-    width: 44px; height: 44px; border-radius: 13px;
+/* 主按钮的矢量图标（闪电=开始计算），替代 emoji */
+.stButton>button[kind="primary"]::before {
+    content: ""; display: inline-block; width: 17px; height: 17px;
+    margin-right: 9px; vertical-align: -3px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 4 14h7l-1 8 9-12h-7z'/%3E%3C/svg%3E") no-repeat center/contain;
+}
+
+/* 计算中的动画：堆叠方块 + 流光文字 */
+.calc-loader {display: flex; flex-direction: column; align-items: center; gap: 16px;
+    padding: 34px 0 28px 0;}
+.cubes {display: flex; gap: 11px; align-items: flex-end; height: 46px;}
+.cube {width: 20px; border-radius: 5px;
+    background: linear-gradient(160deg, #60A5FA, #2563EB);
+    box-shadow: 0 6px 14px rgba(37,99,235,.32);
+    animation: stack 1.15s ease-in-out infinite;}
+.cube:nth-child(1) {height: 20px; animation-delay: 0s;}
+.cube:nth-child(2) {height: 30px; animation-delay: .13s;}
+.cube:nth-child(3) {height: 40px; animation-delay: .26s;}
+.cube:nth-child(4) {height: 30px; animation-delay: .39s;}
+.cube:nth-child(5) {height: 20px; animation-delay: .52s;}
+@keyframes stack {
+    0%, 100% {transform: translateY(0) scaleY(1); opacity: .55;}
+    50% {transform: translateY(-13px) scaleY(1.12); opacity: 1;}
+}
+.calc-text {font-weight: 600; font-size: 15px; letter-spacing: .5px;
+    background: linear-gradient(90deg, #1E3A8A, #38BDF8, #1E3A8A);
+    background-size: 220% auto; -webkit-background-clip: text; background-clip: text;
+    color: transparent; animation: shine 2.2s linear infinite;}
+@keyframes shine {to {background-position: 220% center;}}
+.calc-sub {font-size: 12px; color: #8091A7;}
+
+/* 页脚签名（随内容排布，永不被遮挡） */
+.site-footer {margin: 36px 0 4px 0;}
+.footer-line {height: 1px; margin-bottom: 18px;
+    background: linear-gradient(90deg, rgba(37,99,235,0), rgba(37,99,235,.35), rgba(37,99,235,0));}
+.footer-inner {display: flex; align-items: center; justify-content: center; gap: 14px;}
+.footer-txt {line-height: 1.4;}
+.footer-name {font-weight: 700; font-size: 14px; color: #0F172A; letter-spacing: .3px;}
+.footer-sub {font-size: 11.5px; color: #8091A7; letter-spacing: .5px;}
+.sig-mark {font-weight: 700; font-size: 17px; letter-spacing: 1px; color: #fff;
+    width: 46px; height: 46px; border-radius: 14px;
     display: flex; align-items: center; justify-content: center;
     background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 55%, #0EA5E9 100%);
-    box-shadow: 0 10px 22px rgba(37,99,235,.38); border: 1px solid rgba(255,255,255,.28);}
+    box-shadow: 0 10px 24px rgba(37,99,235,.34), inset 0 1px 0 rgba(255,255,255,.35);
+    border: 1px solid rgba(255,255,255,.30);
+    transition: transform .25s ease, box-shadow .25s ease;}
+.sig-mark:hover {transform: translateY(-2px) rotate(-3deg);
+    box-shadow: 0 14px 30px rgba(37,99,235,.45), inset 0 1px 0 rgba(255,255,255,.4);}
 </style>
 """
 
-SIGNATURE_HTML = """
-<div class="signature">
-  <span class="sig-by">DESIGNED BY</span>
-  <span class="sig-mark">HE</span>
+FOOTER_HTML = """
+<div class="site-footer">
+  <div class="footer-line"></div>
+  <div class="footer-inner">
+    <span class="sig-mark">HE</span>
+    <div class="footer-txt">
+      <div class="footer-name">Designed &amp; Built by HE</div>
+      <div class="footer-sub">智能集装箱装箱系统 · CONTAINER LOADING OPTIMIZER</div>
+    </div>
+  </div>
+</div>
+"""
+
+LOADING_HTML = """
+<div class="calc-loader">
+  <div class="cubes">
+    <div class="cube"></div><div class="cube"></div><div class="cube"></div>
+    <div class="cube"></div><div class="cube"></div>
+  </div>
+  <div class="calc-text">正在计算最优装箱方案…</div>
+  <div class="calc-sub">正在尝试多种装载策略与货物朝向，请稍候</div>
 </div>
 """
 
@@ -524,8 +578,12 @@ IC_CUBE = IC_BOX
 
 def inject_theme():
     st.markdown(THEME_CSS, unsafe_allow_html=True)
-    st.markdown(AURORA_HTML, unsafe_allow_html=True)     # 动态极光背景
-    st.markdown(SIGNATURE_HTML, unsafe_allow_html=True)  # 右下角签名 HE
+    st.markdown(AURORA_HTML, unsafe_allow_html=True)  # 动态极光背景
+
+
+def render_footer():
+    """页脚签名：随内容排布，不会被 Streamlit 悬浮控件遮挡。"""
+    st.markdown(FOOTER_HTML, unsafe_allow_html=True)
 
 
 def render_hero():
@@ -535,6 +593,50 @@ def render_hero():
 def section_title(icon_svg, text):
     st.markdown(f'<div class="sec-title"><span class="sec-ic">{icon_svg}</span><span>{text}</span></div>',
                 unsafe_allow_html=True)
+
+
+def render_guide():
+    """使用说明：这是什么 + 怎么用。默认收起，不干扰熟练用户。"""
+    with st.expander('📖 使用说明 —— 这是什么、怎么用（首次使用请先看这里）', expanded=False):
+        st.markdown("""
+#### 这是什么
+一个**集装箱三维装箱计算工具**。你告诉它集装箱的尺寸和要装的货物（尺寸、数量、重量、类型），
+它会自动算出**每一件货放在哪里、怎么摆**，让空间利用率尽可能高，并给出三维图和可下载的装箱清单。
+
+计算时会自动遵守两条实际装载规则：
+- **重量规则**：超过你设定「重量阈值」的重货，只能放在**底层地面**，不会被叠到别的货物上面。
+- **支撑规则**：任何不落地的货物，底面至少要有 **60%** 被下方货物支撑，避免悬空。
+
+---
+
+#### 怎么用（5 步）
+
+1. **填集装箱尺寸**：在「集装箱尺寸」填长、宽、高（单位：米）。常见 20 尺柜内径约 `5.9 × 2.35 × 2.39`。
+2. **填货物清单**：在表格里逐行填 长/宽/高/数量/重量，类型用下拉选**木箱 / 纸箱 / 托盘**。
+   - 每行最右侧 🗑 可删除该行；下方有 **➕ 添加一行 / 🧹 清空清单 / ↺ 载入示例**。
+   - 也可展开「📥 从文件/文本导入」，上传旧的 txt/xlsx 或粘贴文本批量导入。
+3. **设参数**（左侧栏）：
+   - **重量阈值(kg)**：超过它的货物不允许被叠压。比如填 100，则 950kg 的托盘只能落地。
+   - **计算模式**：**标准版**快速稳定；**增强版**用遗传搜索反复优化，装载率更高但更慢（可设搜索时间上限）。
+4. **点「开始计算」**，等待结果。
+5. **看结果 & 导出**：查看装载率、三维图与清单，底部可下载 **Excel 装箱清单** 与 **JSON 方案**。
+
+---
+
+#### 结果怎么看
+- **实时预估**：还没点计算时就会显示件数、总体积、占集装箱比例、总重，并预警「体积超箱 / 单件超尺寸 / 重货只能放底层」。
+- **三维图**：可用鼠标**旋转、缩放**；悬停可看单件详情。
+- **类别按钮**：点「类别1·纸箱」这类按钮可切换高亮（蓝色=显示中），也可用「全选 / 全不选」。
+- **逐层查看**：拖动滑块，从底层往上逐层显示，直观还原装货顺序。
+- **导出**：Excel 含三页——装箱清单（每件货的原始规格、摆放朝向、落位坐标）、分类汇总、总览。
+
+---
+
+#### 常见问题
+- **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json`，点「📂 载入方案查看」即可重现，无需重算。
+- **提示装不下怎么办？** 程序会尽量多装并告诉你装了多少、利用率多少。可尝试：改用增强版、加大集装箱尺寸、或减少货量。
+- **长宽填反了有影响吗？** 没有。程序会自动尝试两种朝向并取更优结果。
+""")
 
 
 # --------------------------------------------------------------------------- #
@@ -596,6 +698,7 @@ def main():
     st.set_page_config(page_title='智能装箱系统', page_icon='📦', layout='wide')
     inject_theme()
     render_hero()
+    render_guide()
 
     # ---- 会话状态初始化（默认给一份示例，便于上手）----
     st.session_state.setdefault('next_id', 0)
@@ -659,7 +762,7 @@ def main():
         budget = 60.0
         if mode == 'enhanced':
             budget = st.slider('增强版搜索时间上限（秒）', 10, 600, 60, step=10)
-        go_btn = st.button('🚀 开始计算', use_container_width=True, type='primary')
+        go_btn = st.button('开始计算', use_container_width=True, type='primary')
 
         st.divider()
         st.markdown('**查看已保存方案**')
@@ -696,14 +799,19 @@ def main():
         elif not boxes:
             st.warning('货物清单为空或没有有效行，请至少填写一行有效货物。')
         else:
-            with st.spinner('计算中，请稍候……'):
+            loader = st.empty()
+            loader.markdown(LOADING_HTML, unsafe_allow_html=True)  # 计算期间的动画
+            try:
                 packer, fits, msg, stats = run_packing(container_mm, boxes, threshold, mode, budget)
+            finally:
+                loader.empty()
             st.session_state.result = {'packer': packer, 'fits': fits, 'msg': msg,
                                        'stats': stats, 'mode': mode}
 
     res = st.session_state.get('result')
     if not res:
-        st.info('填好数据后，点击左侧“🚀 开始计算”。')
+        st.info('填好集装箱尺寸与货物清单后，点击左侧「开始计算」。首次使用可展开顶部「📖 使用说明」。')
+        render_footer()
         return
 
     packer, fits, msg, stats, mode = res['packer'], res['fits'], res['msg'], res['stats'], res['mode']
@@ -767,6 +875,8 @@ def main():
         d2.download_button('⬇ 下载 JSON 方案', data=build_json_bytes(packer),
                            file_name='packing_plan.json', mime='application/json',
                            use_container_width=True)
+
+    render_footer()
 
 
 if __name__ == '__main__':
