@@ -28,7 +28,7 @@ requirements_web.txt   网页版依赖（本地一键脚本用）
 run_web_app.bat        Windows 一键启动网页版
 run_web_app.command    macOS 一键启动网页版
 build_exe.bat          把命令行版打包成独立 exe（Windows，可选）
-data- *.txt            示例数据
+sample_data.txt        示例数据（可直接导入体验）
 网页版说明.txt          网页版使用与部署说明
 客户使用说明.txt        交付给最终用户的操作指南
 打包与分发说明.txt      桌面版打包说明
