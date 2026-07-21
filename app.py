@@ -206,7 +206,8 @@ def _cuboid_vertices(x, y, z, dx, dy, dz):
             (x, y, z + dz), (x + dx, y, z + dz), (x + dx, y + dy, z + dz), (x, y + dy, z + dz)]
 
 
-def build_figure(packer, highlight_categories=None, region=None):
+def build_figure(packer, highlight_categories=None, region=None,
+                 translucent=False, show_edges=True):
     """构建交互式 3D 图：每类一个网格，可在图例中点选显示/隐藏。
 
     region 非空时为 (x0, x1, y0, y1, z0, z1)（单位 mm），只绘制"起点"落在该范围内的
@@ -235,11 +236,18 @@ def build_figure(packer, highlight_categories=None, region=None):
     for (x, y, z, l, w, h), info in zip(packer.packing_plan, packer.box_colors):
         cats.setdefault(info['input_order'], []).append(((x, y, z, l, w, h), info))
 
+    # 箱体边框线（所有类别共用一条 Scatter3d，避免上千个 trace 拖慢渲染）
+    edge_x, edge_y, edge_z = [], [], []
+    _EDGES = ((0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4),
+              (0, 4), (1, 5), (2, 6), (3, 7))
+    drawn = 0
+
     for io in sorted(cats):
         category = io + 1
         selected = category in highlight_categories
         color = _TAB10[io % len(_TAB10)] if selected else '#d9d9d9'
-        opacity = 0.85 if selected else 0.15
+        # 实体不透明：Plotly 的 Mesh3d 在半透明时没有正确深度排序，会糊成一片
+        opacity = (0.42 if translucent else 1.0) if selected else 0.08
         vx, vy, vz, ii, jj, kk, htext = [], [], [], [], [], [], []
         base = 0
         for (x, y, z, l, w, h), info in cats[io]:
@@ -247,8 +255,15 @@ def build_figure(packer, highlight_categories=None, region=None):
                 x0, x1, y0, y1, z0, z1 = region
                 if not (x0 <= x <= x1 and y0 <= y <= y1 and z0 <= z <= z1):
                     continue  # 分段查看：起点不在所选范围内的箱子暂不显示
-            for (vX, vY, vZ) in _cuboid_vertices(x / MM, y / MM, z / MM, l / MM, w / MM, h / MM):
+            verts = _cuboid_vertices(x / MM, y / MM, z / MM, l / MM, w / MM, h / MM)
+            for (vX, vY, vZ) in verts:
                 vx.append(vX); vy.append(vY); vz.append(vZ)
+            if selected:
+                drawn += 1
+                for a, b in _EDGES:  # 逐箱描边，相邻同色货物才能区分开
+                    edge_x += [verts[a][0], verts[b][0], None]
+                    edge_y += [verts[a][1], verts[b][1], None]
+                    edge_z += [verts[a][2], verts[b][2], None]
             ii += [base + t for t in _TRI_I]
             jj += [base + t for t in _TRI_J]
             kk += [base + t for t in _TRI_K]
@@ -265,15 +280,29 @@ def build_figure(packer, highlight_categories=None, region=None):
         fig.add_trace(go.Mesh3d(
             x=vx, y=vy, z=vz, i=ii, j=jj, k=kk,
             color=color, opacity=opacity, flatshading=True,
+            lighting=dict(ambient=0.62, diffuse=0.88, specular=0.12,
+                          roughness=0.55, fresnel=0.1),
+            lightposition=dict(x=1000, y=-1200, z=2000),
             name=f"类别{category}: {dl:g}×{dw:g}×{dh:g}m ({tlabel}, {qty}件)",
             showlegend=True, hoverinfo='text',
             hovertext=[t for t in htext for _ in range(8)],
         ))
 
+    # 边框线：箱数过多时自动省略，避免拖慢浏览器
+    if show_edges and edge_x and drawn <= 2500:
+        fig.add_trace(go.Scatter3d(
+            x=edge_x, y=edge_y, z=edge_z, mode='lines',
+            line=dict(color='rgba(15,23,42,0.55)', width=1),
+            hoverinfo='skip', showlegend=False))
+
     fig.update_layout(
         scene=dict(
             xaxis_title='长 Length (m)', yaxis_title='宽 Width (m)', zaxis_title='高 Height (m)',
             aspectmode='data',
+            camera=dict(eye=dict(x=1.65, y=-1.55, z=1.0), up=dict(x=0, y=0, z=1)),
+            xaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
+            yaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
+            zaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
         ),
         # 图例移到图表下方：顶部让给 Plotly 工具条（缩放/复位/相机/全屏），避免重叠
         margin=dict(l=0, r=0, t=8, b=0), height=700,
@@ -960,10 +989,16 @@ def main():
             for _k in ('rng_x', 'rng_y', 'rng_z'):
                 st.session_state.pop(_k, None)
             st.rerun()
+
+        v1, v2 = st.columns(2)
+        translucent = v1.toggle('半透明模式（可看到内部货物）', value=False, key='view_translucent')
+        show_edges = v2.toggle('显示箱体边框（便于区分相邻同色货物）', value=True, key='view_edges')
+
         region = (to_mm(xr[0]), to_mm(xr[1]), to_mm(yr[0]), to_mm(yr[1]), to_mm(zr[0]), to_mm(zr[1]))
-        st.plotly_chart(build_figure(packer, set(st.session_state.hl), region=region),
-                        use_container_width=True,
-                        config={'displaylogo': False})
+        st.plotly_chart(
+            build_figure(packer, set(st.session_state.hl), region=region,
+                         translucent=translucent, show_edges=show_edges),
+            use_container_width=True, config={'displaylogo': False})
 
     with st.container(border=True):
         section_title(IC_LIST, '装箱清单')
