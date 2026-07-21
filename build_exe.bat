@@ -45,7 +45,7 @@ python -m PyInstaller --onedir --console --clean --noconfirm --name ContainerPac
     --exclude-module IPython --exclude-module jupyter ^
     --exclude-module notebook --exclude-module tornado ^
     --exclude-module wx --exclude-module pytest --exclude-module sphinx ^
-    packer_optimized.py
+    packer_pro.py
 if errorlevel 1 ( echo  ERROR: build failed, see messages above & pause & exit /b 1 )
 
 call build_env\Scripts\deactivate.bat 2>nul

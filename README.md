@@ -21,17 +21,17 @@
 
 ```
 app.py                 网页版（Streamlit + Plotly），推荐入口
-packer_pro.py          装箱计算内核（标准版 + 增强版），网页版依赖它
-packer.py              最初版（Decimal 实现，保留作参考）
-packer_optimized.py    整数版（复现最初版结果，命令行）
-.streamlit/config.toml 网页版主题配置
-requirements_web.txt   网页版依赖
-requirements.txt       命令行 / 打包依赖
+packer_pro.py          装箱计算内核（标准版 + 增强版），网页版依赖它；也可直接运行命令行版
+.streamlit/config.toml 网页版主题与外观配置
+requirements.txt       运行依赖（Streamlit Cloud 部署用）
+requirements_web.txt   网页版依赖（本地一键脚本用）
 run_web_app.bat        Windows 一键启动网页版
 run_web_app.command    macOS 一键启动网页版
-build_exe*.bat         把命令行版打包成独立 exe（Windows）
+build_exe.bat          把命令行版打包成独立 exe（Windows，可选）
 data- *.txt            示例数据
-*.txt（说明文档）      使用/打包/网页版说明
+网页版说明.txt          网页版使用与部署说明
+客户使用说明.txt        交付给最终用户的操作指南
+打包与分发说明.txt      桌面版打包说明
 ```
 
 ## 🚀 快速开始（网页版）
@@ -71,8 +71,10 @@ Windows 也可直接双击 `run_web_app.bat`，macOS 双击 `run_web_app.command
 
 ## 🖥️ 打包为桌面程序（可选）
 
-在 Windows 上双击 `build_exe.bat`（打包 `packer_optimized.py`）或 `build_exe_original.bat`（打包 `packer.py`），
-在干净虚拟环境中生成体积精简的“文件夹版”程序，详见 `打包与分发说明.txt`。
+在 Windows 上双击 `build_exe.bat`（打包 `packer_pro.py` 的命令行版），
+会在干净虚拟环境中生成体积精简的“文件夹版”程序，详见 `打包与分发说明.txt`。
+
+> 网页版是推荐的交付方式：客户只需浏览器，无需安装任何环境，也不会接触到源码。
 
 ## 📄 许可证
 

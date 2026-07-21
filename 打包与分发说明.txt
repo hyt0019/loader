@@ -20,14 +20,14 @@ scipy / pandas / PyQt / torch 等的环境），PyInstaller 会把这些无关�
 
 一、生成程序（在你自己的 Windows 电脑上，只需做一次）
 --------------------------------------------------------
-1. 确认本文件夹里有 packer_optimized.py。
+1. 确认本文件夹里有 packer_pro.py。
 2. 双击运行  build_exe.bat
 3. 它会自动创建干净环境、装依赖、打包（几分钟）。
 4. 完成后，程序是一个文件夹：  dist\ContainerPacker\
    里面的  ContainerPacker.exe  就是可执行程序。
 
-想打包“最初版”而非优化版？把 build_exe.bat 最后一行的
-packer_optimized.py 改成 packer.py 即可。
+注意：桌面版是命令行交互（黑窗口 + matplotlib 三维图），功能少于网页版。
+推荐优先用网页版交付客户（客户只需浏览器，无需安装环境）。
 
 
 二、发给客户什么

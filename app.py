@@ -98,6 +98,9 @@ def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱'):
             'n': int(n), 'wt': float(wt), 'type': type}
 
 
+SAMPLE_CONTAINER = (5.8, 2.35, 2.35)  # 示例集装箱：20 尺柜近似内径（长×宽×高，米）
+
+
 def sample_rows():
     data = [(0.49, 0.4, 0.09, 44, 18.0, '纸箱'), (1.2, 1.0, 1.35, 7, 1472.0, '木箱'),
             (0.6, 0.26, 0.37, 120, 12.0, '纸箱'), (0.35, 0.28, 0.35, 168, 12.0, '纸箱'),
@@ -819,6 +822,8 @@ def main():
             st.rerun()
         if ac3.button('载入示例', icon=':material/restart_alt:', use_container_width=True):
             st.session_state.rows = sample_rows()
+            # 同时填入示例集装箱尺寸，载入后可直接点「开始计算」
+            st.session_state.cL, st.session_state.cW, st.session_state.cH = SAMPLE_CONTAINER
             st.rerun()
 
     with st.expander('从文件 / 文本导入（导入后会填入上面的清单供核对）', icon=':material/upload_file:'):
