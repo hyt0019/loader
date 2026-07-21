@@ -206,10 +206,11 @@ def _cuboid_vertices(x, y, z, dx, dy, dz):
             (x, y, z + dz), (x + dx, y, z + dz), (x + dx, y + dy, z + dz), (x, y + dy, z + dz)]
 
 
-def build_figure(packer, highlight_categories=None, z_ceiling_mm=None):
+def build_figure(packer, highlight_categories=None, region=None):
     """构建交互式 3D 图：每类一个网格，可在图例中点选显示/隐藏。
 
-    z_ceiling_mm 非空时，仅绘制底部高度 z<=该值的箱子（用于"逐层查看"）。
+    region 非空时为 (x0, x1, y0, y1, z0, z1)（单位 mm），只绘制"起点"落在该范围内的
+    箱子，用于沿装货方向（长/宽）或高度分段查看装载过程。
     """
     if highlight_categories is None:
         highlight_categories = {info['input_order'] + 1 for info in packer.box_colors}
@@ -242,8 +243,10 @@ def build_figure(packer, highlight_categories=None, z_ceiling_mm=None):
         vx, vy, vz, ii, jj, kk, htext = [], [], [], [], [], [], []
         base = 0
         for (x, y, z, l, w, h), info in cats[io]:
-            if z_ceiling_mm is not None and z > z_ceiling_mm:
-                continue  # 逐层查看：高于当前层的箱子暂不显示
+            if region is not None:
+                x0, x1, y0, y1, z0, z1 = region
+                if not (x0 <= x <= x1 and y0 <= y <= y1 and z0 <= z <= z1):
+                    continue  # 分段查看：起点不在所选范围内的箱子暂不显示
             for (vX, vY, vZ) in _cuboid_vertices(x / MM, y / MM, z / MM, l / MM, w / MM, h / MM):
                 vx.append(vX); vy.append(vY); vz.append(vZ)
             ii += [base + t for t in _TRI_I]
@@ -602,7 +605,7 @@ HERO_HTML = """
   <div class="hero-badges">
     <span class="hero-badge">标准版 / 增强版双模式</span>
     <span class="hero-badge">实时体积 · 超重预警</span>
-    <span class="hero-badge">逐层查看</span>
+    <span class="hero-badge">分段查看装载过程</span>
     <span class="hero-badge">Excel / JSON 导出</span>
   </div>
 </div>
@@ -681,7 +684,9 @@ def render_guide():
 - **实时预估**：还没点计算时就会显示件数、总体积、占集装箱比例、总重，并预警「体积超箱 / 单件超尺寸 / 重货只能放底层」。
 - **三维图**：可用鼠标**旋转、缩放**；悬停可看单件详情。
 - **类别按钮**：点「类别1·纸箱」这类按钮可切换高亮（蓝色=显示中），也可用「全选 / 全不选」。
-- **逐层查看**：拖动滑块，从底层往上逐层显示，直观还原装货顺序。
+- **分段查看**：长/宽/高三个方向各有一个**两端滑块**，可圈定只显示某一段货物。
+  实际装柜是沿**长度方向**从一端装到另一端，所以拖动「长度方向」的左端或右端，
+  就能模拟**从前往后**或**从后往前**的装载过程；「重置显示范围」一键还原。
 - **导出**：Excel 含三页——装箱清单（每件货的原始规格、摆放朝向、落位坐标）、分类汇总、总览。
 
 ---
@@ -916,7 +921,7 @@ def main():
                 cat_label[cat] = f"类别{cat}·{tl}"
         st.session_state.setdefault('hl', set(all_cats))
         st.session_state.hl = {c for c in st.session_state.hl if c in all_cats}
-        st.caption('点击下方按钮切换高亮（蓝色=显示中），或直接点右侧图例；下方滑块可逐层查看。')
+        st.caption('点击下方按钮切换高亮（蓝色=显示中），也可直接点图例显示/隐藏。')
         tcols = st.columns(len(all_cats) + 2)
         for i, cat in enumerate(all_cats):
             active = cat in st.session_state.hl
@@ -933,11 +938,30 @@ def main():
         if tcols[len(all_cats) + 1].button('全不选', use_container_width=True):
             st.session_state.hl = set()
             st.rerun()
-        max_h = packer.container[2] / MM
-        z_ceiling = st.slider('逐层查看：显示底部高度 ≤ (m)', 0.0, float(max_h), float(max_h),
-                              step=round(max_h / 20, 3) or 0.01,
-                              help='从下往上逐层查看装载过程；拉到最高即显示全部。')
-        st.plotly_chart(build_figure(packer, set(st.session_state.hl), z_ceiling_mm=to_mm(z_ceiling)),
+        L_m = packer.container[0] / MM
+        W_m = packer.container[1] / MM
+        H_m = packer.container[2] / MM
+        st.caption('分段查看：每个方向都可拖动**两端滑块**圈定要显示的区段。实际装柜通常沿'
+                   '**长度方向**从一端装到另一端，拖动「长度方向」的左端或右端，即可模拟'
+                   '从前往后 / 从后往前的装载过程。')
+        r1a, r1b = st.columns(2)
+        xr = r1a.slider(f'长度方向 Length（装货方向）  0 ~ {L_m:g} m',
+                        0.0, float(L_m), (0.0, float(L_m)),
+                        step=max(0.01, round(L_m / 100, 2)), key='rng_x')
+        yr = r1b.slider(f'宽度方向 Width  0 ~ {W_m:g} m',
+                        0.0, float(W_m), (0.0, float(W_m)),
+                        step=max(0.01, round(W_m / 100, 2)), key='rng_y')
+        r2a, r2b = st.columns(2)
+        zr = r2a.slider(f'高度方向 Height  0 ~ {H_m:g} m',
+                        0.0, float(H_m), (0.0, float(H_m)),
+                        step=max(0.01, round(H_m / 100, 2)), key='rng_z')
+        r2b.markdown('<div style="height:30px"></div>', unsafe_allow_html=True)  # 与滑块对齐
+        if r2b.button('重置显示范围', icon=':material/restart_alt:', use_container_width=True):
+            for _k in ('rng_x', 'rng_y', 'rng_z'):
+                st.session_state.pop(_k, None)
+            st.rerun()
+        region = (to_mm(xr[0]), to_mm(xr[1]), to_mm(yr[0]), to_mm(yr[1]), to_mm(zr[0]), to_mm(zr[1]))
+        st.plotly_chart(build_figure(packer, set(st.session_state.hl), region=region),
                         use_container_width=True,
                         config={'displaylogo': False})
 
