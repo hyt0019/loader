@@ -996,7 +996,7 @@ def main():
             st.rerun()
 
         v1, v2 = st.columns(2)
-        translucent = v1.toggle('半透明模式（可看到内部货物）', value=False, key='view_translucent')
+        translucent = v1.toggle('半透明模式（可看到内部货物）', value=True, key='view_translucent')
         show_edges = v2.toggle('显示箱体边框（便于区分相邻同色货物）', value=True, key='view_edges')
 
         region = (to_mm(xr[0]), to_mm(xr[1]), to_mm(yr[0]), to_mm(yr[1]), to_mm(zr[0]), to_mm(zr[1]))
