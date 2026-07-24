@@ -176,16 +176,6 @@ class ContainerPacker:
             return self.priority.get(io, 0.0)
         return 0.0
 
-    def _apply_priority(self, ordered):
-        """按底层优先指标稳定排序：优先级高的排在前面（先放置→更靠底层）。
-
-        使用稳定排序，因此同一优先级内部仍保留原策略/遗传搜索给出的顺序，
-        既尊重用户的底层优先需求，又保留对空间利用率的优化空间。
-        """
-        if self.bottom_metric == 'none':
-            return ordered
-        return sorted(ordered, key=self._sink_key, reverse=True)
-
     # ---------------- 空间索引辅助 ---------------- #
     def _cells(self, x, y, z, l, w, h):
         cs = self.cell
@@ -218,7 +208,7 @@ class ContainerPacker:
         if x + l > self.container[0] or y + w > self.container[1] or z + h > self.container[2]:
             return False
         # 说明：重量不再作为「硬约束」阻止叠放。重/密度大的箱子改为通过装箱顺序
-        # 优先放到底层（见 _apply_priority），实在放不下时仍允许被叠压，更贴近实际装载。
+        # 优先放到底层（见 _policy_priority 与适应度中的底层得分），实在放不下时仍允许被叠压。
         for idx in self._neighbors(x, y, z, l, w, h):
             ox, oy, oz, ol, ow, oh = self.occupied[idx]
             if (x < ox + ol and x + l > ox and
@@ -267,17 +257,23 @@ class ContainerPacker:
         orient_map:    {input_order: [orientation(mm三元组), ...]}
         装不下的单件会被【跳过】并继续装后面的货物，以最大化装载体积；
         同一类中若有一件放不下，其余同尺寸同类件也必然放不下，直接跳过以节省时间。
-        返回 (是否全部装入, 已装数量, 已用体积)
+        返回 (是否全部装入, 已装数量, 已用体积, 底层优先得分)
+
+        底层优先得分 sink_score = Σ 下沉键 ×(箱底距柜顶的高度)：重/密度大/高优先级的箱子
+        放得越低，得分越高。它只作为「装载件数与利用率相同」时的次级排序依据，
+        因此启用底层优先【绝不会】减少能装下的件数（软偏好，非硬约束）。
         """
         self._reset_state()
-        ordered_types = self._apply_priority(ordered_types)  # 底层优先：重/密度大/高优先级先放
         number = 1
         type_count = {}
         used_volume = 0
+        sink_score = 0.0
+        H = self.container[2]  # 柜高（z 向，不受长宽对调影响）
         all_placed = True
         for (l, w, h, n, weight, t, io) in ordered_types:
             type_count[t] = type_count.get(t, 0) + 1
             orients = orient_map[io]
+            sk = self._sink_key((l, w, h, n, weight, t, io))  # 该类下沉键
             exhausted = False
             for _ in range(n):
                 best = None
@@ -295,6 +291,7 @@ class ContainerPacker:
                     continue
                 self._place(*best)
                 used_volume += best[3] * best[4] * best[5]
+                sink_score += sk * (H - best[2])  # best[2]=箱底 z，越低得分越高
                 if record:
                     self.box_colors.append({
                         'number': number,
@@ -305,7 +302,7 @@ class ContainerPacker:
                         'original_dimensions': (l / MM, w / MM, h / MM),
                     })
                 number += 1
-        return all_placed, len(self.packing_plan), used_volume
+        return all_placed, len(self.packing_plan), used_volume, sink_score
 
     def _solve(self, swap_xy, ordered_types, orient_map, record=True):
         """在（可选长宽对调的）坐标系中求解，再把结果映射回原坐标系。
@@ -317,22 +314,28 @@ class ContainerPacker:
         if swap_xy:
             self.container = (original[1], original[0], original[2])
         try:
-            ok, placed, used = self._run_policy(ordered_types, orient_map, record=record)
+            ok, placed, used, sink = self._run_policy(ordered_types, orient_map, record=record)
         finally:
             self.container = original
         if swap_xy:
             self.packing_plan = [(y, x, z, w, l, h) for (x, y, z, l, w, h) in self.packing_plan]
-        return ok, placed, used
+        return ok, placed, used, sink
 
     def _deterministic_policies(self):
         """一组确定性策略（不同排序 / 朝向来源），用于组合搜索。"""
-        return [
+        pols = [
             self._policy_original(),
             self._policy_sorted(lambda b: (max(b[0], b[1], b[2]), b[0] * b[1] * b[2])),
             self._policy_sorted(lambda b: (b[0] * b[1] * b[2], max(b[0], b[1], b[2]))),
             self._policy_sorted(lambda b: (b[0] * b[1], b[2])),
             self._policy_sorted(lambda b: (b[2], b[0] * b[1])),
         ]
+        # 启用底层优先时，额外提供一个「按下沉键排序」的候选策略：
+        # 它把重/密度大/高优先级的箱子排在前面（先放→更靠底层）。
+        # 是否采用仍由适应度 (利用率, 件数, 底层得分) 决定，故不会牺牲装载件数。
+        if self.bottom_metric != 'none':
+            pols.insert(0, self._policy_priority())
+        return pols
 
     # ---------------- 策略构造 ---------------- #
     def _policy_original(self):
@@ -343,6 +346,15 @@ class ContainerPacker:
 
     def _policy_sorted(self, key):
         ordered = sorted(self.boxes, key=key, reverse=True)
+        orient_map = {b[6]: self._allowed(b[6], sorted_orientations(b[0], b[1], b[2]))
+                      for b in self.boxes}
+        return ordered, orient_map
+
+    def _policy_priority(self):
+        """底层优先候选策略：按「下沉键」(重量/密度/手动优先级) 从大到小排序，
+        同级再按体积从大到小，让需要放底层的货物尽量先放。"""
+        ordered = sorted(self.boxes,
+                         key=lambda b: (self._sink_key(b), b[0] * b[1] * b[2]), reverse=True)
         orient_map = {b[6]: self._allowed(b[6], sorted_orientations(b[0], b[1], b[2]))
                       for b in self.boxes}
         return ordered, orient_map
@@ -369,21 +381,44 @@ class ContainerPacker:
         返回 (是否全部装入, 说明)。
         """
         total = self.total_units
+        if self.bottom_metric == 'manual':
+            return self._pack_manual(total)  # 手动模式：严格按用户优先级摆放
         best_fit, best = None, None
         for swap in (False, True):
             for pol in self._deterministic_policies():
-                _, placed, used = self._solve(swap, pol[0], pol[1], record=False)
-                fit = (used, placed)
+                _, placed, used, sink = self._solve(swap, pol[0], pol[1], record=False)
+                # 适应度：先看利用率，再看件数，最后用底层得分做同分排序（软偏好）
+                fit = (used, placed, sink)
                 if best_fit is None or fit > best_fit:
                     best_fit, best = fit, (swap, pol)
                 if placed == total:
-                    break
+                    break  # 已满载即提前结束（底层优先策略排在最前，会被优先尝试）
             if best_fit[1] == total:
                 break
-        _, placed, used = self._solve(best[0], best[1][0], best[1][1], record=True)
+        _, placed, used, sink = self._solve(best[0], best[1][0], best[1][1], record=True)
         if placed == total:
             return True, "成功"
         return False, (f"已尽最大努力装载：装入 {placed}/{total} 件，"
+                       f"空间利用率 {used / self.container_volume * 100:.1f}%（其余货物放不下）")
+
+    # ---------------- 对外：手动优先级 ---------------- #
+    def _pack_manual(self, total):
+        """手动模式：严格按用户设定的优先级（高优先级先放→更靠底层）装箱。
+
+        这是用户主动选择的强约束，因此以「尊重优先级」为首要目标；仍会在两种长宽
+        朝向中选装载更多的一种，尽量少丢件。若无法全部装入，则据实提示（需求5）。
+        """
+        pol = self._policy_priority()
+        best_fit, best_swap = None, False
+        for swap in (False, True):
+            _, placed, used, _ = self._solve(swap, pol[0], pol[1], record=False)
+            fit = (placed, used)  # 手动模式优先保证装载件数，其次利用率
+            if best_fit is None or fit > best_fit:
+                best_fit, best_swap = fit, swap
+        _, placed, used, _ = self._solve(best_swap, pol[0], pol[1], record=True)
+        if placed == total:
+            return True, "成功（已按您设定的优先级摆放，高优先级货物优先放底层）"
+        return False, (f"已按您设定的优先级尽力装载：装入 {placed}/{total} 件，"
                        f"空间利用率 {used / self.container_volume * 100:.1f}%（其余货物放不下）")
 
     # ---------------- 对外：增强版（遗传/随机重启搜索） ---------------- #
@@ -395,6 +430,15 @@ class ContainerPacker:
         返回 (是否装入, 说明, 统计信息 dict)。
         """
         total = self.total_units
+        if self.bottom_metric == 'manual':
+            # 手动模式的摆放顺序由用户优先级确定，无需搜索；直接按优先级装箱
+            fits, msg = self._pack_manual(total)
+            used = sum(l * w * h for _, _, _, l, w, h in self.packing_plan)
+            stats = {'placed': len(self.packing_plan), 'total': total,
+                     'utilization': used / self.container_volume if self.container_volume else 0.0,
+                     'evaluations': 0, 'seconds': 0.0,
+                     'optimal_full': fits}
+            return fits, msg, stats
         num_types = len(self.boxes)
         rng = random.Random(rng_seed)
         t0 = time.time()
@@ -402,12 +446,13 @@ class ContainerPacker:
         best_fit = None
         best = None  # (swap_xy, (ordered_types, orient_map))
 
-        # --- 评估：适应度 = (已装体积, 已装件数)，以“空间利用率最大”为首要目标 ---
+        # --- 评估：适应度 = (已装体积, 已装件数, 底层得分)，利用率最大为首要目标；
+        #     底层得分仅在利用率与件数相同时生效，故不会牺牲装载件数 ---
         def ev(swap, pol):
             nonlocal evals, best_fit, best
-            _, placed, used = self._solve(swap, pol[0], pol[1], record=False)
+            _, placed, used, sink = self._solve(swap, pol[0], pol[1], record=False)
             evals += 1
-            fit = (used, placed)
+            fit = (used, placed, sink)
             if best_fit is None or fit > best_fit:
                 best_fit, best = fit, (swap, pol)
             return fit
@@ -478,7 +523,7 @@ class ContainerPacker:
                 pop = new_pop
 
         # --- 用最优策略正式装箱（生成编号/颜色信息） ---
-        _, placed, used = self._solve(best[0], best[1][0], best[1][1], record=True)
+        _, placed, used, sink = self._solve(best[0], best[1][0], best[1][1], record=True)
         stats = {
             'placed': placed,
             'total': total,
