@@ -90,12 +90,17 @@ def df_to_boxes(df):
 CARGO_TYPES = ['木箱', '纸箱', '托盘']
 
 
-def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱'):
-    """新建一行货物，分配全局唯一 id（避免删除后控件状态错位）。"""
+def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱', no_flip=False, prio=0):
+    """新建一行货物，分配全局唯一 id（避免删除后控件状态错位）。
+
+    no_flip: 是否禁止倒放（落地面固定长×宽，高只能是原始高度）。
+    prio:    手动模式下的摆放优先级（越大越优先放底层）。
+    """
     rid = st.session_state.get('next_id', 0)
     st.session_state.next_id = rid + 1
     return {'id': rid, 'l': float(l), 'w': float(w), 'h': float(h),
-            'n': int(n), 'wt': float(wt), 'type': type}
+            'n': int(n), 'wt': float(wt), 'type': type,
+            'no_flip': bool(no_flip), 'prio': int(prio)}
 
 
 SAMPLE_CONTAINER = (5.8, 2.35, 2.35)  # 示例集装箱：20 尺柜近似内径（长×宽×高，米）
@@ -123,6 +128,20 @@ def rows_to_boxes(rows):
         if l > 0 and w > 0 and h > 0 and n > 0:
             out.append((l, w, h, n, wt, t))
     return out
+
+
+def rows_to_boxes_ex(rows):
+    """货物行 -> (boxes, no_flip, priority)，三者按同一顺序对齐（供装箱器使用）。"""
+    boxes, no_flip, priority = [], [], []
+    for r in rows:
+        l, w, h = to_mm(r['l']), to_mm(r['w']), to_mm(r['h'])
+        n, wt = to_int(r['n']), to_float(r['wt'])
+        t = TYPE_CODES.get(r['type'], r['type'])
+        if l > 0 and w > 0 and h > 0 and n > 0:
+            boxes.append((l, w, h, n, wt, t))
+            no_flip.append(bool(r.get('no_flip', False)))
+            priority.append(to_float(r.get('prio', 0)))
+    return boxes, no_flip, priority
 
 
 def _valid_rows(rows):
@@ -177,8 +196,10 @@ def build_cargo_xlsx(container_mm, rows):
 # --------------------------------------------------------------------------- #
 #                               装箱计算                                       #
 # --------------------------------------------------------------------------- #
-def run_packing(container, boxes, threshold, mode, budget):
-    packer = ContainerPacker(container, boxes, threshold)
+def run_packing(container, boxes, threshold, mode, budget,
+                no_flip=None, priority=None, bottom_metric='none'):
+    packer = ContainerPacker(container, boxes, threshold, no_flip=no_flip,
+                             priority=priority, bottom_metric=bottom_metric)
     if mode == "enhanced":
         fits, msg, stats = packer.pack_enhanced(time_budget=budget, verbose=False)
     else:
@@ -190,6 +211,19 @@ def run_packing(container, boxes, threshold, mode, budget):
             'evaluations': 1, 'seconds': 0.0, 'optimal_full': fits,
         }
     return packer, fits, msg, stats
+
+
+def baseline_note(container, boxes, threshold, constrained_placed):
+    """当启用了「禁止倒放/底层优先」等约束、且未能全部装入时，
+    对照「不加任何约束」的原始方案能装多少件，据实提示用户约束的代价（需求5）。"""
+    base = ContainerPacker(container, boxes, threshold)  # 无约束，纯空间利用率
+    base.pack()
+    base_placed = len(base.packing_plan)
+    if base_placed > constrained_placed:
+        return (f"提示：受「禁止倒放 / 底层优先」限制，本方案装入 {constrained_placed} 件；"
+                f"若取消这些限制，原始方案最多可装 {base_placed} 件。"
+                f"已在保留您所选限制的前提下尽力装载——如需装下更多，可放宽限制。")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -460,7 +494,8 @@ def render_live_estimate(container_mm, boxes, threshold):
     if est['oversized_count']:
         st.warning(f"⚠ 有 {est['oversized_count']} 类货物任意摆放都超过集装箱内尺寸，无法装入。")
     if est['heavy_count']:
-        st.info(f"ℹ 有 {est['heavy_count']} 类为重货(>{threshold:g}kg)，只能放底层、不可被叠压。")
+        st.info(f"ℹ 有 {est['heavy_count']} 类为重货(>{threshold:g}kg)，将优先放到底层"
+                f"（实在放不下时仍允许叠放）。")
 
 
 # --------------------------------------------------------------------------- #
@@ -690,9 +725,11 @@ def render_guide():
 一个**集装箱三维装箱计算工具**。你告诉它集装箱的尺寸和要装的货物（尺寸、数量、重量、类型），
 它会自动算出**每一件货放在哪里、怎么摆**，让空间利用率尽可能高，并给出三维图和可下载的装箱清单。
 
-计算时会自动遵守两条实际装载规则：
-- **重量规则**：超过你设定「重量阈值」的重货，只能放在**底层地面**，不会被叠到别的货物上面。
+计算时会自动遵守这些实际装载规则：
+- **底层优先（软规则）**：可选择让「重的」或「体积重(密度)大的」货物**优先放到底层**；这是偏好而非硬性限制，实在放不下时仍允许叠放，更贴近真实装柜。
+- **禁止倒放（硬规则）**：在货物清单里勾选「禁止倒放」的货物，落地面固定为**长×宽**、高度只能是原始高度（避免运输中零件散开）。
 - **支撑规则**：任何不落地的货物，底面至少要有 **60%** 被下方货物支撑，避免悬空。
+- **两种工作模式**（左侧栏切换）：**自动模式**由程序按所选指标自动决定底层优先；**手动模式**由你为每类货物手动设定「优先级」，优先级高的放底层。
 
 ---
 
@@ -705,7 +742,10 @@ def render_guide():
    - **录一半要走？** 展开「**导出当前清单**」，选 **txt** 或 **xlsx** 导出到本地；
      下次再用「**从文件 / 文本导入**」读回来接着填，**不用重新录入**。
 3. **设参数**（左侧栏）：
-   - **重量阈值(kg)**：超过它的货物不允许被叠压。比如填 100，则 950kg 的托盘只能落地。
+   - **工作模式**：**自动模式** / **手动模式**（见上文说明）。
+   - **底层优先指标**（自动模式）：可启用「按重量优先」或「按体积重/密度优先」二选一；密度大的货物更耐压，适合放底层。两项都不启用则只追求空间利用率。
+   - **优先级**（手动模式）：在货物清单里给每类货物填数字，越大越靠底层。
+   - **重货预警阈值(kg)**：仅用于「实时预估」里的重货提示，不再作为硬性叠放限制。
    - **计算模式**：**标准版**快速稳定；**增强版**用遗传搜索反复优化，装载率更高但更慢（可设搜索时间上限）。
 4. **点「开始计算」**，等待结果。
 5. **看结果 & 导出**：查看装载率、三维图与清单，底部可下载 **Excel 装箱清单** 与 **JSON 方案**。
@@ -753,11 +793,21 @@ def _confirm_delete(rid):
         st.rerun()
 
 
-def render_cargo_editor():
-    """自定义货物表格：每行可就地编辑，最右侧 🗑 删除该行（含确认与"不再提示"）。"""
-    widths = [1.05, 1.05, 1.05, 0.85, 1.05, 1.0, 0.55]
+def render_cargo_editor(show_priority=False):
+    """自定义货物表格：每行可就地编辑，最右侧 🗑 删除该行（含确认与"不再提示"）。
+
+    show_priority=True 时（手动模式）额外显示「优先级」列，数值越大越优先放底层。
+    「禁止倒放」列两种模式都显示（勾选=落地面固定长×宽，高只能是原始高度）。
+    """
+    labels = ['长(m)', '宽(m)', '高(m)', '数量', '重量(kg)', '类型', '禁止倒放']
+    widths = [1.0, 1.0, 1.0, 0.8, 1.0, 0.95, 0.85]
+    if show_priority:
+        labels.append('优先级')
+        widths.append(0.8)
+    labels.append('操作')
+    widths.append(0.55)
     head = st.columns(widths)
-    for col, label in zip(head, ['长(m)', '宽(m)', '高(m)', '数量', '重量(kg)', '类型', '操作']):
+    for col, label in zip(head, labels):
         col.markdown(f"<div class='grid-head'>{label}</div>", unsafe_allow_html=True)
     for r in st.session_state.rows:
         rid = r['id']
@@ -774,7 +824,16 @@ def render_cargo_editor():
                                     key=f"wt_{rid}", label_visibility='collapsed')
         idx = CARGO_TYPES.index(r['type']) if r['type'] in CARGO_TYPES else 0
         r['type'] = c[5].selectbox('t', CARGO_TYPES, index=idx, key=f"t_{rid}", label_visibility='collapsed')
-        if c[6].button('🗑', key=f"del_{rid}", help='删除此行', use_container_width=True):
+        r['no_flip'] = c[6].checkbox('禁止倒放', value=bool(r.get('no_flip', False)),
+                                     key=f"nf_{rid}", label_visibility='collapsed',
+                                     help='勾选后此类货物不可倒放：落地面固定为长×宽，高只能是原始高度')
+        col_i = 7
+        if show_priority:
+            r['prio'] = c[col_i].number_input('prio', value=int(r.get('prio', 0)), step=1,
+                                              key=f"prio_{rid}", label_visibility='collapsed',
+                                              help='数值越大越优先放到底层')
+            col_i += 1
+        if c[col_i].button('🗑', key=f"del_{rid}", help='删除此行', use_container_width=True):
             if st.session_state.get('skip_del_confirm'):
                 _delete_row(rid)
                 st.rerun()
@@ -787,6 +846,17 @@ def render_cargo_editor():
 # --------------------------------------------------------------------------- #
 #                               Streamlit UI                                   #
 # --------------------------------------------------------------------------- #
+def _excl_weight():
+    """两个底层优先指标互斥：打开「重量优先」时自动关闭「体积重优先」。"""
+    if st.session_state.get('m_weight'):
+        st.session_state.m_vol = False
+
+
+def _excl_vol():
+    if st.session_state.get('m_vol'):
+        st.session_state.m_weight = False
+
+
 def main():
     st.set_page_config(page_title='智能装箱系统', page_icon='📦', layout='wide')
     inject_theme()
@@ -800,6 +870,20 @@ def main():
     for _k in ('cL', 'cW', 'cH'):
         st.session_state.setdefault(_k, None)  # 默认留空
 
+    # ---- 工作模式切换（自动 / 手动），需在渲染货物清单前确定 ----
+    with st.sidebar:
+        section_title(IC_BOX, '工作模式')
+        page = st.radio('工作模式', ['自动模式', '手动模式'], key='page_mode',
+                        label_visibility='collapsed',
+                        help='自动模式：程序按所选「底层优先指标」自动决定哪类货物放底层。\n'
+                             '手动模式：你为每类货物手动指定摆放优先级，优先级高的放底层。')
+        if page == '自动模式':
+            st.caption('自动模式：程序按所选「底层优先指标」自动摆放。')
+        else:
+            st.caption('手动模式：在货物清单里为每类货物设置「优先级」，数值越大越靠底层。')
+        st.divider()
+    manual = (page == '手动模式')
+
     with st.container(border=True):
         section_title(IC_BOX, '集装箱尺寸（米）')
         cc1, cc2, cc3 = st.columns(3)
@@ -811,8 +895,13 @@ def main():
 
     with st.container(border=True):
         section_title(IC_LIST, '货物清单')
-        st.caption('直接在下表修改数值，类型用下拉选择；每行最右侧 🗑 可删除该行（带确认）。')
-        render_cargo_editor()
+        if manual:
+            st.caption('直接在下表修改数值；勾选「禁止倒放」的货物不会被倒置摆放；'
+                       '「优先级」数值越大越优先放到底层。每行最右侧 🗑 可删除该行（带确认）。')
+        else:
+            st.caption('直接在下表修改数值，类型用下拉选择；勾选「禁止倒放」的货物不会被倒置摆放；'
+                       '每行最右侧 🗑 可删除该行（带确认）。')
+        render_cargo_editor(show_priority=manual)
         ac1, ac2, ac3 = st.columns(3)
         if ac1.button('添加一行', icon=':material/add:', use_container_width=True):
             st.session_state.rows.append(_new_row())
@@ -872,7 +961,18 @@ def main():
 
     with st.sidebar:
         section_title(IC_GAUGE, '计算参数')
-        threshold = st.number_input('重量阈值 (kg)：超过则不可叠放在其他箱子上', value=100.0, step=10.0)
+        if manual:
+            st.info('手动模式：底层优先由货物清单中的「优先级」决定'
+                    '（数值越大越靠底层，仍允许叠放）。')
+            bottom_metric = 'manual'
+        else:
+            st.markdown('**底层优先指标**（重 / 密度大的货物优先放底层，仍允许叠放）')
+            use_weight = st.toggle('按重量优先（重的在下）', key='m_weight', on_change=_excl_weight)
+            use_vol = st.toggle('按体积重 / 密度优先（密度大的在下）', key='m_vol', on_change=_excl_vol)
+            bottom_metric = 'weight' if use_weight else ('volumetric' if use_vol else 'none')
+            if bottom_metric == 'none':
+                st.caption('两项均未启用：仅以空间利用率为目标（不指定底层优先）。')
+        threshold = st.number_input('重货预警阈值 (kg)：仅用于上方「实时预估」提示', value=100.0, step=10.0)
         mode_label = st.radio('计算模式', ['标准版（快速稳定）', '增强版（搜索逼近最优）'])
         mode = 'enhanced' if mode_label.startswith('增强') else 'standard'
         budget = 60.0
@@ -903,7 +1003,7 @@ def main():
                 st.warning('请先选择 JSON 方案文件。')
 
     # ---- 实时预估与预警（随表格即时更新，无需点击计算）----
-    boxes = rows_to_boxes(st.session_state.rows)
+    boxes, no_flip, priority = rows_to_boxes_ex(st.session_state.rows)
     with st.container(border=True):
         render_live_estimate(container_mm, boxes, threshold)
 
@@ -917,11 +1017,17 @@ def main():
             loader = st.empty()
             loader.markdown(LOADING_HTML, unsafe_allow_html=True)  # 计算期间的动画
             try:
-                packer, fits, msg, stats = run_packing(container_mm, boxes, threshold, mode, budget)
+                packer, fits, msg, stats = run_packing(
+                    container_mm, boxes, threshold, mode, budget,
+                    no_flip=no_flip, priority=priority, bottom_metric=bottom_metric)
+                # 需求5：约束导致装不满时，对照无约束原始方案并提示代价
+                note = None
+                if not fits and (any(no_flip) or bottom_metric != 'none'):
+                    note = baseline_note(container_mm, boxes, threshold, stats['placed'])
             finally:
                 loader.empty()
             st.session_state.result = {'packer': packer, 'fits': fits, 'msg': msg,
-                                       'stats': stats, 'mode': mode}
+                                       'stats': stats, 'mode': mode, 'note': note}
 
     res = st.session_state.get('result')
     if not res:
@@ -943,6 +1049,9 @@ def main():
             c4.metric('搜索评估 / 用时', f"{stats['evaluations']} 次 / {stats['seconds']}s")
         if not fits:
             st.warning(f'未能全部装入：{msg}')
+        note = res.get('note')
+        if note:
+            st.info(note)
 
     with st.container(border=True):
         section_title(IC_CUBE, '交互式 3D 装箱结果')

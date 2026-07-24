@@ -89,13 +89,32 @@ def original_orientation_order(l, w, h):
 #                            装箱器（整数几何内核）                            #
 # --------------------------------------------------------------------------- #
 class ContainerPacker:
-    def __init__(self, container, boxes, weight_threshold=100):
+    def __init__(self, container, boxes, weight_threshold=100,
+                 no_flip=None, priority=None, bottom_metric='none'):
+        """三维装箱器。
+
+        新增参数：
+          no_flip:       每类货物是否「禁止倒放」。可为 list（与 boxes 同序）或 dict{io: bool}。
+                         禁止倒放意味着该类货物落地面固定为「长×宽」，高度只能是原始高度 h
+                         （运输中不会倒过来，避免内部零件散开）。
+          priority:      每类货物的「摆放优先级」。可为 list 或 dict{io: number}；
+                         数值越大越优先放到底层。用于「手动模式」。
+          bottom_metric: 底层优先指标，决定哪类货物优先放到底层（仍允许叠放）：
+                         'none'        —— 不启用，纯粹以空间利用率为目标（原始行为）
+                         'weight'      —— 重量大的优先放底层
+                         'volumetric'  —— 体积重(密度=重量/体积)大的优先放底层
+                         'manual'      —— 按 priority 手动优先级放底层
+        """
         self.container = tuple(int(x) for x in container)
         self.boxes = [
             (int(l), int(w), int(h), int(n), float(weight), t, i)
             for i, (l, w, h, n, weight, t) in enumerate(boxes)
         ]
         self.weight_threshold = float(weight_threshold)
+        self.no_flip = self._normalize_flags(no_flip, bool, False)
+        self.priority = self._normalize_flags(priority, float, 0.0)
+        self.bottom_metric = bottom_metric if bottom_metric in (
+            'none', 'weight', 'volumetric', 'manual') else 'none'
         self.container_volume = self.container[0] * self.container[1] * self.container[2]
         self.total_units = sum(b[3] for b in self.boxes)
         self.cell = max(1, min(self.container) // 15) if self.container and min(self.container) else 1
@@ -112,6 +131,60 @@ class ContainerPacker:
         self.points = {(0, 0, 0)}
         self.packing_plan = []
         self.box_colors = []
+
+    # ---------------- 约束 / 优先级辅助 ---------------- #
+    def _normalize_flags(self, value, cast, default):
+        """把 no_flip / priority 统一成 {io: value} 字典。"""
+        result = {}
+        if value is None:
+            return result
+        if isinstance(value, dict):
+            for k, v in value.items():
+                try:
+                    result[int(k)] = cast(v)
+                except (TypeError, ValueError):
+                    result[int(k)] = default
+        else:  # 按 boxes 顺序给出的序列
+            for i, v in enumerate(value):
+                try:
+                    result[i] = cast(v)
+                except (TypeError, ValueError):
+                    result[i] = default
+        return result
+
+    def _allowed(self, io, orients):
+        """按「禁止倒放」过滤朝向：只保留高度(z 向)等于原始高度 h 的朝向。
+
+        禁止倒放 = 落地面固定为长×宽，箱子只能绕竖直轴旋转（长宽可互换），高只能是 h。
+        若过滤后为空（理论上不会），则退回全部朝向以保证仍能装箱。
+        """
+        if self.no_flip.get(io):
+            h = self.boxes[io][2]  # 原始高度(mm)
+            filtered = [o for o in orients if o[2] == h]
+            return filtered or orients
+        return orients
+
+    def _sink_key(self, box):
+        """底层优先「下沉键」：值越大越应该放到底层（越先放置）。"""
+        l, w, h, n, weight, t, io = box
+        if self.bottom_metric == 'weight':
+            return weight
+        if self.bottom_metric == 'volumetric':
+            vol = l * w * h  # mm^3
+            return (weight * 1e9 / vol) if vol > 0 else 0.0  # 密度 kg/m^3
+        if self.bottom_metric == 'manual':
+            return self.priority.get(io, 0.0)
+        return 0.0
+
+    def _apply_priority(self, ordered):
+        """按底层优先指标稳定排序：优先级高的排在前面（先放置→更靠底层）。
+
+        使用稳定排序，因此同一优先级内部仍保留原策略/遗传搜索给出的顺序，
+        既尊重用户的底层优先需求，又保留对空间利用率的优化空间。
+        """
+        if self.bottom_metric == 'none':
+            return ordered
+        return sorted(ordered, key=self._sink_key, reverse=True)
 
     # ---------------- 空间索引辅助 ---------------- #
     def _cells(self, x, y, z, l, w, h):
@@ -144,8 +217,8 @@ class ContainerPacker:
     def can_place(self, x, y, z, l, w, h, weight):
         if x + l > self.container[0] or y + w > self.container[1] or z + h > self.container[2]:
             return False
-        if weight > self.weight_threshold and z != 0:
-            return False
+        # 说明：重量不再作为「硬约束」阻止叠放。重/密度大的箱子改为通过装箱顺序
+        # 优先放到底层（见 _apply_priority），实在放不下时仍允许被叠压，更贴近实际装载。
         for idx in self._neighbors(x, y, z, l, w, h):
             ox, oy, oz, ol, ow, oh = self.occupied[idx]
             if (x < ox + ol and x + l > ox and
@@ -197,6 +270,7 @@ class ContainerPacker:
         返回 (是否全部装入, 已装数量, 已用体积)
         """
         self._reset_state()
+        ordered_types = self._apply_priority(ordered_types)  # 底层优先：重/密度大/高优先级先放
         number = 1
         type_count = {}
         used_volume = 0
@@ -263,12 +337,14 @@ class ContainerPacker:
     # ---------------- 策略构造 ---------------- #
     def _policy_original(self):
         ordered = sorted(self.boxes, key=lambda b: (b[0] * b[1] * b[2], max(b[0], b[1], b[2])), reverse=True)
-        orient_map = {b[6]: original_orientation_order(b[0], b[1], b[2]) for b in self.boxes}
+        orient_map = {b[6]: self._allowed(b[6], original_orientation_order(b[0], b[1], b[2]))
+                      for b in self.boxes}
         return ordered, orient_map
 
     def _policy_sorted(self, key):
         ordered = sorted(self.boxes, key=key, reverse=True)
-        orient_map = {b[6]: sorted_orientations(b[0], b[1], b[2]) for b in self.boxes}
+        orient_map = {b[6]: self._allowed(b[6], sorted_orientations(b[0], b[1], b[2]))
+                      for b in self.boxes}
         return ordered, orient_map
 
     def _policy_from_genome(self, type_perm, orient_genes):
@@ -280,7 +356,7 @@ class ContainerPacker:
         ordered = [self.boxes[i] for i in type_perm]
         orient_map = {}
         for b in self.boxes:
-            base = sorted_orientations(b[0], b[1], b[2])
+            base = self._allowed(b[6], sorted_orientations(b[0], b[1], b[2]))
             g = orient_genes.get(b[6], 0) % len(base)
             orient_map[b[6]] = base[g:] + base[:g]
         return ordered, orient_map
@@ -619,7 +695,8 @@ def main():
         return
 
     container_dims, boxes = read_input_from_file(input_file)
-    packer = ContainerPacker(container_dims, boxes, weight_threshold)
+    # 命令行版：重量作为「底层优先」软指标（重货优先放底层，仍允许叠放）
+    packer = ContainerPacker(container_dims, boxes, weight_threshold, bottom_metric='weight')
 
     mode, budget = choose_mode()
     if mode == "enhanced":
