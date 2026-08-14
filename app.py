@@ -432,13 +432,16 @@ def build_figure(packer, highlight_categories=None, region=None,
         qty = packer.boxes[io][3]
         dl, dw, dh = cats[io][0][1]['original_dimensions']
         tlabel = TYPE_LABELS.get(str(cats[io][0][1]['type']), str(cats[io][0][1]['type']))
+        desc = str(cats[io][0][1].get('desc', '')).strip()
+        # 图例优先显示零件描述，没有描述才回退到「类别N」
+        lead = desc if desc else f"类别{category}"
         fig.add_trace(go.Mesh3d(
             x=vx, y=vy, z=vz, i=ii, j=jj, k=kk,
             color=color, opacity=opacity, flatshading=True,
             lighting=dict(ambient=0.62, diffuse=0.88, specular=0.12,
                           roughness=0.55, fresnel=0.1),
             lightposition=dict(x=1000, y=-1200, z=2000),
-            name=f"类别{category}: {dl:g}×{dw:g}×{dh:g}m ({tlabel}, {qty}件)",
+            name=f"{lead}: {dl:g}×{dw:g}×{dh:g}m ({tlabel}, {qty}件)",
             showlegend=True, hoverinfo='text',
             hovertext=[t for t in htext for _ in range(8)],
         ))
@@ -1019,13 +1022,20 @@ def main():
         # 发货单号（整柜一个，手动输入；导入导出均会带上）
         st.text_input('发货单号', key='ship_no',
                       placeholder='选填，例如 SO20260814001')
-        # 常用柜型快速填入（仍可在下方手动修改尺寸）
-        st.caption('可点选常用柜型快速填入，也可直接在下方手动输入尺寸。')
+        # 常用柜型快速填入（当前选中的柜型高亮蓝底；仍可在下方手动修改尺寸）
+        st.caption('点选常用柜型快速填入（当前选中的柜型高亮蓝底），也可直接在下方手动输入尺寸。')
+        cur = (st.session_state.cL, st.session_state.cW, st.session_state.cH)
         gc1, gc2, gc3, _ = st.columns([1, 1, 1, 3])
         for col, name in ((gc1, '20GP'), (gc2, '40GP'), (gc3, '40HQ')):
-            if col.button(name, use_container_width=True, key=f'gauge_{name}'):
-                st.session_state.cL, st.session_state.cW, st.session_state.cH = CONTAINER_PRESETS[name]
+            pl = CONTAINER_PRESETS[name]
+            active = cur == pl  # 当前尺寸与该柜型一致 -> 蓝底高亮
+            if col.button(name, use_container_width=True, key=f'gauge_{name}',
+                          type='primary' if active else 'secondary'):
+                st.session_state.cL, st.session_state.cW, st.session_state.cH = pl
                 st.rerun()
+            col.markdown(
+                f"<div style='text-align:center;font-size:11.5px;color:#64748B;margin-top:-6px'>"
+                f"{pl[0]:g}×{pl[1]:g}×{pl[2]:g} m</div>", unsafe_allow_html=True)
         cc1, cc2, cc3 = st.columns(3)
         cL = cc1.number_input('长 Length', min_value=0.0, value=st.session_state.cL, step=0.01, format='%.3f')
         cW = cc2.number_input('宽 Width', min_value=0.0, value=st.session_state.cW, step=0.01, format='%.3f')
@@ -1209,7 +1219,9 @@ def main():
             cat = info['input_order'] + 1
             if cat not in cat_label:
                 tl = TYPE_LABELS.get(str(info['type']), str(info['type']))
-                cat_label[cat] = f"类别{cat}·{tl}"
+                desc = str(info.get('desc', '')).strip()
+                # 高亮按钮优先显示零件描述，没有描述才回退到「类别N·类型」
+                cat_label[cat] = desc if desc else f"类别{cat}·{tl}"
         st.session_state.setdefault('hl', set(all_cats))
         st.session_state.hl = {c for c in st.session_state.hl if c in all_cats}
         st.caption('点击下方按钮切换高亮（蓝色=显示中），也可直接点图例显示/隐藏。')
