@@ -27,7 +27,16 @@ from packer_pro import ContainerPacker, MM, to_mm, to_int, to_float
 # --------------------------------------------------------------------------- #
 #                               数据解析                                       #
 # --------------------------------------------------------------------------- #
+def _extract_ship_no(text):
+    """从文本中提取发货单号（匹配 `发货单号` 之后的内容，忽略前导 :：# 空白）。"""
+    for ln in text.splitlines():
+        if '发货单号' in ln:
+            return ln.split('发货单号', 1)[1].lstrip(' :：#\t').strip()
+    return ''
+
+
 def parse_txt(text):
+    ship_no = _extract_ship_no(text)
     # 跳过空行与整行注释（# 开头），使带注释的导出文件可以原样再导入
     lines = [ln.strip() for ln in text.splitlines()
              if ln.strip() and ln.split('#')[0].strip()]
@@ -40,7 +49,7 @@ def parse_txt(text):
             raise ValueError(f"第 {3 + i} 行数据列数不足（需要 长 宽 高 数量 重量 类型），实际: {parts}")
         boxes.append((to_mm(parts[0]), to_mm(parts[1]), to_mm(parts[2]),
                       to_int(parts[3]), to_float(parts[4]), parts[5]))
-    return container, boxes
+    return container, boxes, ship_no
 
 
 def parse_xlsx(file_like):
@@ -48,13 +57,16 @@ def parse_xlsx(file_like):
     wb = openpyxl.load_workbook(file_like, data_only=True)
     sheet = wb.active
     container = tuple(to_mm(cell.value) for cell in list(sheet[1])[:3])
+    # 发货单号存于第一行第 5 列（E1）；旧文件无此列时为空
+    sv = sheet.cell(row=1, column=5).value
+    ship_no = '' if sv is None else str(sv).strip()
     box_count = int(sheet.cell(row=2, column=1).value)
     boxes = []
     for i in range(3, 3 + box_count):
         row = [cell.value for cell in sheet[i]]
         boxes.append((to_mm(row[0]), to_mm(row[1]), to_mm(row[2]),
                       to_int(row[3]), to_float(row[4]), str(row[5])))
-    return container, boxes
+    return container, boxes, ship_no
 
 
 # --------------------------------------------------------------------------- #
@@ -105,6 +117,13 @@ def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱', no_flip=False, pri
 
 SAMPLE_CONTAINER = (5.8, 2.35, 2.35)  # 示例集装箱：20 尺柜近似内径（长×宽×高，米）
 
+# 常用柜型内径（长×宽×高，米）——点选即可快速填入，仍可手动修改
+CONTAINER_PRESETS = {
+    '20GP': (5.8, 2.35, 2.35),
+    '40GP': (12.0, 2.35, 2.35),
+    '40HQ': (12.0, 2.35, 2.65),
+}
+
 
 def sample_rows():
     data = [(0.49, 0.4, 0.09, 44, 18.0, '纸箱'), (1.2, 1.0, 1.35, 7, 1472.0, '木箱'),
@@ -149,17 +168,21 @@ def _valid_rows(rows):
             if to_mm(r['l']) > 0 and to_mm(r['w']) > 0 and to_mm(r['h']) > 0 and to_int(r['n']) > 0]
 
 
-def build_cargo_txt(container_mm, rows):
+def build_cargo_txt(container_mm, rows, ship_no=''):
     """把当前录入的集装箱+货物清单导出为 txt。
 
     格式与导入完全一致（行内 # 之后为注释，导入时会自动忽略），
     因此导出的文件可以直接用「从文件/文本导入」读回来，实现间断录入。
+    发货单号写在首行注释 `# 发货单号: XXX`，导入时会自动读回。
     """
     valid = _valid_rows(rows)
     L, W, H = (c / MM for c in container_mm)
-    lines = [f"{L:g} {W:g} {H:g}    # 集装箱 长 宽 高（米）",
-             f"{len(valid)}    # 货物种类数",
-             "# 以下每行：长 宽 高 数量 重量 类型(0=木箱 1=纸箱 2=托盘)"]
+    lines = []
+    if ship_no:
+        lines.append(f"# 发货单号: {ship_no}")
+    lines += [f"{L:g} {W:g} {H:g}    # 集装箱 长 宽 高（米）",
+              f"{len(valid)}    # 货物种类数",
+              "# 以下每行：长 宽 高 数量 重量 类型(0=木箱 1=纸箱 2=托盘)"]
     for r in valid:
         code = TYPE_CODES.get(r['type'], '0')
         label = TYPE_LABELS.get(code, str(r['type']))
@@ -168,10 +191,10 @@ def build_cargo_txt(container_mm, rows):
     return ("\n".join(lines) + "\n").encode('utf-8')
 
 
-def build_cargo_xlsx(container_mm, rows):
+def build_cargo_xlsx(container_mm, rows, ship_no=''):
     """把当前录入的集装箱+货物清单导出为 xlsx（同样可直接再导入）。
 
-    第7列的中文类型仅供阅读，导入时会被忽略。
+    第一行 D/E 列存「发货单号」标签与值，导入时会自动读回；第7列的中文类型仅供阅读。
     """
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
@@ -180,7 +203,7 @@ def build_cargo_xlsx(container_mm, rows):
     wb = Workbook()
     ws = wb.active
     ws.title = '货物清单'
-    ws.append([L, W, H, None, None, None, '集装箱 长 宽 高（米）'])
+    ws.append([L, W, H, '发货单号', ship_no or None, None, '集装箱 长 宽 高（米）'])
     ws.append([len(valid), None, None, None, None, None, '货物种类数'])
     for r in valid:
         code = TYPE_CODES.get(r['type'], '0')
@@ -392,7 +415,7 @@ def build_category_summary(packer):
     return pd.DataFrame(rows)
 
 
-def build_excel_bytes(packer, stats):
+def build_excel_bytes(packer, stats, ship_no=''):
     """导出三页 Excel：汇总 / 分类汇总 / 明细装箱清单。"""
     from openpyxl.utils import get_column_letter
     detail = build_dataframe(packer)
@@ -400,9 +423,10 @@ def build_excel_bytes(packer, stats):
     used_vol = sum(l * w * h for _, _, _, l, w, h in packer.packing_plan) / 1e9
     total_weight = sum(info['weight'] for info in packer.box_colors)
     summary = pd.DataFrame({
-        '项目': ['集装箱(长×宽×高 m)', '集装箱容积(m³)', '装入件数', '货物总件数', '未装件数',
+        '项目': ['发货单号', '集装箱(长×宽×高 m)', '集装箱容积(m³)', '装入件数', '货物总件数', '未装件数',
                  '空间利用率', '已装货物体积(m³)', '已装货物总重(kg)', '搜索评估次数', '搜索用时(s)'],
         '数值': [
+            ship_no or '—',
             f"{packer.container[0] / MM:g} × {packer.container[1] / MM:g} × {packer.container[2] / MM:g}",
             round(packer.container_volume / 1e9, 3),
             stats['placed'], stats['total'], stats['total'] - stats['placed'],
@@ -427,8 +451,9 @@ def build_excel_bytes(packer, stats):
     return buf.getvalue()
 
 
-def build_json_bytes(packer):
+def build_json_bytes(packer, ship_no=''):
     data = {
+        'ship_no': ship_no,
         'container': [c / MM for c in packer.container],
         'boxes': [[l / MM, w / MM, h / MM, n, weight, t] for (l, w, h, n, weight, t, i) in packer.boxes],
         'packing_plan': [
@@ -869,6 +894,7 @@ def main():
         st.session_state.rows = []  # 默认空清单，用户可手动添加或点“载入示例”
     for _k in ('cL', 'cW', 'cH'):
         st.session_state.setdefault(_k, None)  # 默认留空
+    st.session_state.setdefault('ship_no', '')  # 发货单号（整柜一个）
 
     # ---- 工作模式切换（自动 / 手动），需在渲染货物清单前确定 ----
     with st.sidebar:
@@ -886,6 +912,16 @@ def main():
 
     with st.container(border=True):
         section_title(IC_BOX, '集装箱尺寸（米）')
+        # 发货单号（整柜一个，手动输入；导入导出均会带上）
+        st.text_input('发货单号', key='ship_no',
+                      placeholder='选填，例如 SO20260814001')
+        # 常用柜型快速填入（仍可在下方手动修改尺寸）
+        st.caption('可点选常用柜型快速填入，也可直接在下方手动输入尺寸。')
+        gc1, gc2, gc3, _ = st.columns([1, 1, 1, 3])
+        for col, name in ((gc1, '20GP'), (gc2, '40GP'), (gc3, '40HQ')):
+            if col.button(name, use_container_width=True, key=f'gauge_{name}'):
+                st.session_state.cL, st.session_state.cW, st.session_state.cH = CONTAINER_PRESETS[name]
+                st.rerun()
         cc1, cc2, cc3 = st.columns(3)
         cL = cc1.number_input('长 Length', min_value=0.0, value=st.session_state.cL, step=0.01, format='%.3f')
         cW = cc2.number_input('宽 Width', min_value=0.0, value=st.session_state.cW, step=0.01, format='%.3f')
@@ -922,18 +958,20 @@ def main():
         if st.button('导入到清单'):
             try:
                 c = b = None
+                sn = ''
                 if up is not None:
                     if up.name.endswith('.txt'):
-                        c, b = parse_txt(up.getvalue().decode('utf-8'))
+                        c, b, sn = parse_txt(up.getvalue().decode('utf-8'))
                     else:
-                        c, b = parse_xlsx(io.BytesIO(up.getvalue()))
+                        c, b, sn = parse_xlsx(io.BytesIO(up.getvalue()))
                 elif paste.strip():
-                    c, b = parse_txt(paste)
+                    c, b, sn = parse_txt(paste)
                 else:
                     st.warning('请先上传文件或粘贴文本。')
                 if c:
                     st.session_state.cL, st.session_state.cW, st.session_state.cH = c[0] / MM, c[1] / MM, c[2] / MM
                     st.session_state.rows = boxes_to_rows(b)
+                    st.session_state.ship_no = sn  # 回填发货单号
                     st.success('已导入，请在上方核对后点击“开始计算”。')
                     st.rerun()
             except Exception as e:  # noqa
@@ -949,12 +987,12 @@ def main():
         elif fmt == 'txt':
             ex2.download_button(
                 f'导出货物清单（{n_valid} 类 · txt）', icon=':material/download:',
-                data=build_cargo_txt(container_mm, st.session_state.rows),
+                data=build_cargo_txt(container_mm, st.session_state.rows, st.session_state.get('ship_no', '')),
                 file_name='货物清单.txt', mime='text/plain', use_container_width=True)
         else:
             ex2.download_button(
                 f'导出货物清单（{n_valid} 类 · xlsx）', icon=':material/download:',
-                data=build_cargo_xlsx(container_mm, st.session_state.rows),
+                data=build_cargo_xlsx(container_mm, st.session_state.rows, st.session_state.get('ship_no', '')),
                 file_name='货物清单.xlsx',
                 mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 use_container_width=True)
@@ -988,6 +1026,7 @@ def main():
                 try:
                     plan = json.loads(plan_file.getvalue().decode('utf-8'))
                     pk = load_plan_into_packer(plan)
+                    st.session_state.ship_no = str(plan.get('ship_no', '') or '')  # 回填发货单号
                     used = sum(l * w * h for _, _, _, l, w, h in pk.packing_plan)
                     st.session_state.result = {
                         'packer': pk, 'fits': len(pk.packing_plan) == pk.total_units, 'msg': '',
@@ -1041,6 +1080,9 @@ def main():
     st.divider()
     with st.container(border=True):
         section_title(IC_CHART, '装箱结果概览')
+        _sn = st.session_state.get('ship_no', '')
+        if _sn:
+            st.caption(f'发货单号：{_sn}')
         c1, c2, c3, c4 = st.columns(4)
         c1.metric('装入 / 总数', f"{stats['placed']} / {stats['total']}")
         c2.metric('空间利用率', f"{stats['utilization']*100:.1f}%")
@@ -1118,13 +1160,14 @@ def main():
         section_title(IC_LIST, '装箱清单')
         st.dataframe(build_dataframe(packer), use_container_width=True, height=320)
         d1, d2 = st.columns(2)
+        _sn = st.session_state.get('ship_no', '')
         d1.download_button('下载 Excel 装箱清单', icon=':material/table_view:',
-                           data=build_excel_bytes(packer, stats),
+                           data=build_excel_bytes(packer, stats, _sn),
                            file_name='packing_plan.xlsx',
                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                            use_container_width=True)
         d2.download_button('下载 JSON 方案', icon=':material/data_object:',
-                           data=build_json_bytes(packer),
+                           data=build_json_bytes(packer, _sn),
                            file_name='packing_plan.json', mime='application/json',
                            use_container_width=True)
 
