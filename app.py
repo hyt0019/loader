@@ -35,29 +35,74 @@ def _extract_ship_no(text):
     return ''
 
 
+def _extract_desc_from_comment(raw):
+    """从 txt 数据行的行末注释中提取零件描述（`描述：XXX` 或 `描述:XXX`）。"""
+    if '#' not in raw:
+        return ''
+    comment = raw.split('#', 1)[1]
+    for sep in ('描述：', '描述:'):
+        if sep in comment:
+            return comment.split(sep, 1)[1].strip()
+    return ''
+
+
 def parse_txt(text):
     ship_no = _extract_ship_no(text)
     # 跳过空行与整行注释（# 开头），使带注释的导出文件可以原样再导入
-    lines = [ln.strip() for ln in text.splitlines()
-             if ln.strip() and ln.split('#')[0].strip()]
-    container = tuple(to_mm(x) for x in lines[0].split('#')[0].strip().split()[:3])
-    box_count = int(lines[1].split('#')[0].strip())
-    boxes = []
+    raw_lines = [ln for ln in text.splitlines()
+                 if ln.strip() and ln.split('#')[0].strip()]
+    container = tuple(to_mm(x) for x in raw_lines[0].split('#')[0].strip().split()[:3])
+    box_count = int(raw_lines[1].split('#')[0].strip())
+    boxes, descriptions = [], []
     for i in range(box_count):
-        parts = lines[2 + i].split('#')[0].strip().split()
+        raw = raw_lines[2 + i]
+        parts = raw.split('#')[0].strip().split()
         if len(parts) < 6:
             raise ValueError(f"第 {3 + i} 行数据列数不足（需要 长 宽 高 数量 重量 类型），实际: {parts}")
         boxes.append((to_mm(parts[0]), to_mm(parts[1]), to_mm(parts[2]),
                       to_int(parts[3]), to_float(parts[4]), parts[5]))
-    return container, boxes, ship_no
+        descriptions.append(_extract_desc_from_comment(raw))
+    return container, boxes, ship_no, descriptions
 
 
 def parse_xlsx(file_like):
     import openpyxl
     wb = openpyxl.load_workbook(file_like, data_only=True)
     sheet = wb.active
+    a1 = sheet.cell(row=1, column=1).value
+
+    # 新版带标签格式：A1 == '发货单号'
+    if isinstance(a1, str) and a1.strip() == '发货单号':
+        ship_no = str(sheet.cell(row=1, column=2).value or '').strip()
+        container = (to_mm(sheet.cell(row=2, column=3).value),
+                     to_mm(sheet.cell(row=2, column=5).value),
+                     to_mm(sheet.cell(row=2, column=7).value))
+        # 定位表头行（第一列为「零件描述…」）
+        hdr = None
+        for rr in range(1, sheet.max_row + 1):
+            v = sheet.cell(row=rr, column=1).value
+            if isinstance(v, str) and v.startswith('零件描述'):
+                hdr = rr
+                break
+        boxes, descriptions = [], []
+        if hdr:
+            for rr in range(hdr + 1, sheet.max_row + 1):
+                l = sheet.cell(row=rr, column=2).value
+                w = sheet.cell(row=rr, column=3).value
+                h = sheet.cell(row=rr, column=4).value
+                if to_mm(l) <= 0 or to_mm(w) <= 0 or to_mm(h) <= 0:
+                    continue
+                n = sheet.cell(row=rr, column=5).value
+                wt = sheet.cell(row=rr, column=6).value
+                tp = sheet.cell(row=rr, column=7).value
+                code = TYPE_CODES.get(str(tp).strip(), str(tp).strip()) if tp is not None else '0'
+                boxes.append((to_mm(l), to_mm(w), to_mm(h), to_int(n), to_float(wt), code))
+                dv = sheet.cell(row=rr, column=1).value
+                descriptions.append('' if dv is None else str(dv))
+        return container, boxes, ship_no, descriptions
+
+    # 旧版定位格式（向后兼容）：第一行为集装箱长宽高
     container = tuple(to_mm(cell.value) for cell in list(sheet[1])[:3])
-    # 发货单号存于第一行第 5 列（E1）；旧文件无此列时为空
     sv = sheet.cell(row=1, column=5).value
     ship_no = '' if sv is None else str(sv).strip()
     box_count = int(sheet.cell(row=2, column=1).value)
@@ -66,7 +111,7 @@ def parse_xlsx(file_like):
         row = [cell.value for cell in sheet[i]]
         boxes.append((to_mm(row[0]), to_mm(row[1]), to_mm(row[2]),
                       to_int(row[3]), to_float(row[4]), str(row[5])))
-    return container, boxes, ship_no
+    return container, boxes, ship_no, [''] * len(boxes)
 
 
 # --------------------------------------------------------------------------- #
@@ -102,17 +147,18 @@ def df_to_boxes(df):
 CARGO_TYPES = ['木箱', '纸箱', '托盘']
 
 
-def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱', no_flip=False, prio=0):
+def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱', no_flip=False, prio=0, desc=''):
     """新建一行货物，分配全局唯一 id（避免删除后控件状态错位）。
 
     no_flip: 是否禁止倒放（落地面固定长×宽，高只能是原始高度）。
     prio:    手动模式下的摆放优先级（越大越优先放底层）。
+    desc:    零件描述 / 品名，仅用于区分货物与导出展示。
     """
     rid = st.session_state.get('next_id', 0)
     st.session_state.next_id = rid + 1
     return {'id': rid, 'l': float(l), 'w': float(w), 'h': float(h),
             'n': int(n), 'wt': float(wt), 'type': type,
-            'no_flip': bool(no_flip), 'prio': int(prio)}
+            'no_flip': bool(no_flip), 'prio': int(prio), 'desc': str(desc)}
 
 
 SAMPLE_CONTAINER = (5.8, 2.35, 2.35)  # 示例集装箱：20 尺柜近似内径（长×宽×高，米）
@@ -126,15 +172,23 @@ CONTAINER_PRESETS = {
 
 
 def sample_rows():
-    data = [(0.49, 0.4, 0.09, 44, 18.0, '纸箱'), (1.2, 1.0, 1.35, 7, 1472.0, '木箱'),
-            (0.6, 0.26, 0.37, 120, 12.0, '纸箱'), (0.35, 0.28, 0.35, 168, 12.0, '纸箱'),
-            (1.1, 1.1, 1.4, 2, 950.0, '木箱')]
+    # (长, 宽, 高, 数量, 重量, 类型, 禁止倒放, 优先级, 零件描述)
+    data = [(0.49, 0.4, 0.09, 44, 18.0, '纸箱', False, 0, '法兰盘配件'),
+            (1.2, 1.0, 1.35, 7, 1472.0, '木箱', False, 0, '主机箱体'),
+            (0.6, 0.26, 0.37, 120, 12.0, '纸箱', False, 0, '连接管件'),
+            (0.35, 0.28, 0.35, 168, 12.0, '纸箱', False, 0, '标准螺栓组'),
+            (1.1, 1.1, 1.4, 2, 950.0, '木箱', False, 0, '变速箱总成')]
     return [_new_row(*d) for d in data]
 
 
-def boxes_to_rows(boxes):
-    return [_new_row(l / MM, w / MM, h / MM, n, weight, TYPE_LABELS.get(str(t), str(t)))
-            for (l, w, h, n, weight, t) in boxes]
+def boxes_to_rows(boxes, descriptions=None):
+    descriptions = descriptions or []
+    rows = []
+    for i, (l, w, h, n, weight, t) in enumerate(boxes):
+        d = descriptions[i] if i < len(descriptions) else ''
+        rows.append(_new_row(l / MM, w / MM, h / MM, n, weight,
+                             TYPE_LABELS.get(str(t), str(t)), desc=d))
+    return rows
 
 
 def rows_to_boxes(rows):
@@ -150,8 +204,8 @@ def rows_to_boxes(rows):
 
 
 def rows_to_boxes_ex(rows):
-    """货物行 -> (boxes, no_flip, priority)，三者按同一顺序对齐（供装箱器使用）。"""
-    boxes, no_flip, priority = [], [], []
+    """货物行 -> (boxes, no_flip, priority, descriptions)，四者按同一顺序对齐（供装箱器使用）。"""
+    boxes, no_flip, priority, descriptions = [], [], [], []
     for r in rows:
         l, w, h = to_mm(r['l']), to_mm(r['w']), to_mm(r['h'])
         n, wt = to_int(r['n']), to_float(r['wt'])
@@ -160,7 +214,8 @@ def rows_to_boxes_ex(rows):
             boxes.append((l, w, h, n, wt, t))
             no_flip.append(bool(r.get('no_flip', False)))
             priority.append(to_float(r.get('prio', 0)))
-    return boxes, no_flip, priority
+            descriptions.append(str(r.get('desc', '')))
+    return boxes, no_flip, priority, descriptions
 
 
 def _valid_rows(rows):
@@ -177,17 +232,18 @@ def build_cargo_txt(container_mm, rows, ship_no=''):
     """
     valid = _valid_rows(rows)
     L, W, H = (c / MM for c in container_mm)
-    lines = []
-    if ship_no:
-        lines.append(f"# 发货单号: {ship_no}")
-    lines += [f"{L:g} {W:g} {H:g}    # 集装箱 长 宽 高（米）",
-              f"{len(valid)}    # 货物种类数",
-              "# 以下每行：长 宽 高 数量 重量 类型(0=木箱 1=纸箱 2=托盘)"]
+    lines = [f"# 发货单号: {ship_no}" if ship_no else "# 发货单号: （未填写）",
+             f"{L:g} {W:g} {H:g}    # 集装箱内尺寸：长 宽 高（米）",
+             f"{len(valid)}    # 货物种类数",
+             "# 数据列：长(m) 宽(m) 高(m) 数量 重量(kg) 类型(0=木箱 1=纸箱 2=托盘)"
+             "  ｜  行末为：类型 · 零件描述"]
     for r in valid:
         code = TYPE_CODES.get(r['type'], '0')
         label = TYPE_LABELS.get(code, str(r['type']))
+        desc = str(r.get('desc', '')).strip()
+        comment = label if not desc else f"{label} · 描述：{desc}"
         lines.append(f"{float(r['l']):g} {float(r['w']):g} {float(r['h']):g} "
-                     f"{int(r['n'])} {float(r['wt']):g} {code}    # {label}")
+                     f"{int(r['n'])} {float(r['wt']):g} {code}    # {comment}")
     return ("\n".join(lines) + "\n").encode('utf-8')
 
 
@@ -197,20 +253,56 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
     第一行 D/E 列存「发货单号」标签与值，导入时会自动读回；第7列的中文类型仅供阅读。
     """
     from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     valid = _valid_rows(rows)
     L, W, H = (c / MM for c in container_mm)
     wb = Workbook()
     ws = wb.active
     ws.title = '货物清单'
-    ws.append([L, W, H, '发货单号', ship_no or None, None, '集装箱 长 宽 高（米）'])
-    ws.append([len(valid), None, None, None, None, None, '货物种类数'])
+
+    bold = Font(bold=True)
+    head_font = Font(bold=True, color='FFFFFF')
+    head_fill = PatternFill('solid', fgColor='2E5395')
+    label_fill = PatternFill('solid', fgColor='EEF3FB')
+    center = Alignment(horizontal='center', vertical='center')
+    thin = Side(style='thin', color='C9D4E6')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # 顶部信息区：发货单号 + 集装箱内尺寸（带清晰标签）
+    ws['A1'] = '发货单号'; ws['B1'] = ship_no or '（未填写）'
+    ws['A1'].font = bold; ws['A1'].fill = label_fill
+    ws['A2'] = '集装箱内尺寸（米）'; ws['A2'].font = bold; ws['A2'].fill = label_fill
+    ws['B2'] = '长'; ws['C2'] = L; ws['D2'] = '宽'; ws['E2'] = W; ws['F2'] = '高'; ws['G2'] = H
+    for cellref in ('B2', 'D2', 'F2'):
+        ws[cellref].font = bold
+
+    # 表头（第 4 行）
+    header = ['零件描述 / 品名', '长(m)', '宽(m)', '高(m)', '数量', '重量(kg)',
+              '类型', '禁止倒放', '优先级']
+    HEAD_ROW = 4
+    for j, name in enumerate(header, start=1):
+        c = ws.cell(row=HEAD_ROW, column=j, value=name)
+        c.font = head_font; c.fill = head_fill; c.alignment = center; c.border = border
+
+    # 数据行
+    rrow = HEAD_ROW
     for r in valid:
+        rrow += 1
         code = TYPE_CODES.get(r['type'], '0')
-        ws.append([float(r['l']), float(r['w']), float(r['h']),
-                   int(r['n']), float(r['wt']), code, TYPE_LABELS.get(code, '')])
-    for idx, width in enumerate([12, 12, 12, 10, 12, 10, 26], start=1):
+        label = TYPE_LABELS.get(code, str(r['type']))
+        vals = [str(r.get('desc', '')), float(r['l']), float(r['w']), float(r['h']),
+                int(r['n']), float(r['wt']), label,
+                '是' if r.get('no_flip') else '否', int(r.get('prio', 0))]
+        for j, v in enumerate(vals, start=1):
+            c = ws.cell(row=rrow, column=j, value=v)
+            c.border = border
+            if j >= 2:
+                c.alignment = center
+
+    for idx, width in enumerate([26, 10, 10, 10, 8, 11, 9, 10, 8], start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
+    ws.freeze_panes = f'A{HEAD_ROW + 1}'
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -220,9 +312,10 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
 #                               装箱计算                                       #
 # --------------------------------------------------------------------------- #
 def run_packing(container, boxes, threshold, mode, budget,
-                no_flip=None, priority=None, bottom_metric='none'):
+                no_flip=None, priority=None, bottom_metric='none', descriptions=None):
     packer = ContainerPacker(container, boxes, threshold, no_flip=no_flip,
-                             priority=priority, bottom_metric=bottom_metric)
+                             priority=priority, bottom_metric=bottom_metric,
+                             descriptions=descriptions)
     if mode == "enhanced":
         fits, msg, stats = packer.pack_enhanced(time_budget=budget, verbose=False)
     else:
@@ -329,8 +422,10 @@ def build_figure(packer, highlight_categories=None, region=None,
             kk += [base + t for t in _TRI_K]
             dl, dw, dh = info['original_dimensions']
             tlabel = TYPE_LABELS.get(str(info['type']), str(info['type']))
+            _desc = info.get('desc', '')
+            _desc_line = f"{_desc}<br>" if _desc else ''
             htext.append(f"箱号 {info['number']}｜类别 {category}｜{tlabel}<br>"
-                         f"尺寸 {dl:g}×{dw:g}×{dh:g} m｜重量 {info['weight']:g} kg")
+                         f"{_desc_line}尺寸 {dl:g}×{dw:g}×{dh:g} m｜重量 {info['weight']:g} kg")
             base += 8
         if not vx:
             continue  # 该类别在当前层高下无可显示的箱子
@@ -385,6 +480,7 @@ def build_dataframe(packer):
         rows.append({
             '装载顺序': info['number'],
             '类别': info['input_order'] + 1,
+            '零件描述': info.get('desc', ''),
             '类型': TYPE_LABELS.get(str(info['type']), str(info['type'])),
             '原始规格(长×宽×高 m)': f"{dl:g}×{dw:g}×{dh:g}",
             '摆放长(m)': l / MM, '摆放宽(m)': w / MM, '摆放高(m)': h / MM,
@@ -404,6 +500,7 @@ def build_category_summary(packer):
         p = placed.get(io, 0)
         rows.append({
             '类别': io + 1,
+            '零件描述': packer.descriptions.get(io, '') if hasattr(packer, 'descriptions') else '',
             '类型': TYPE_LABELS.get(str(t), str(t)),
             '规格(长×宽×高 m)': f"{l / MM:g}×{w / MM:g}×{h / MM:g}",
             '应装数量': n, '已装数量': p, '未装数量': n - p,
@@ -455,7 +552,8 @@ def build_json_bytes(packer, ship_no=''):
     data = {
         'ship_no': ship_no,
         'container': [c / MM for c in packer.container],
-        'boxes': [[l / MM, w / MM, h / MM, n, weight, t] for (l, w, h, n, weight, t, i) in packer.boxes],
+        'boxes': [[l / MM, w / MM, h / MM, n, weight, t, packer.descriptions.get(i, '')]
+                  for (l, w, h, n, weight, t, i) in packer.boxes],
         'packing_plan': [
             {'position': [p / MM for p in pos[:3]], 'dimensions': [p / MM for p in pos[3:]], 'box_info': info}
             for pos, info in zip(packer.packing_plan, packer.box_colors)],
@@ -466,9 +564,12 @@ def build_json_bytes(packer, ship_no=''):
 def load_plan_into_packer(plan):
     """从已保存的方案 JSON 重建 packer（仅用于查看，不重新计算）。"""
     container = tuple(to_mm(x) for x in plan['container'])
-    boxes = [(to_mm(l), to_mm(w), to_mm(h), int(n), float(weight), t)
-             for l, w, h, n, weight, t in plan['boxes']]
-    packer = ContainerPacker(container, boxes)
+    boxes, descriptions = [], []
+    for b in plan['boxes']:
+        l, w, h, n, weight, t = b[:6]
+        boxes.append((to_mm(l), to_mm(w), to_mm(h), int(n), float(weight), t))
+        descriptions.append(b[6] if len(b) > 6 else '')
+    packer = ContainerPacker(container, boxes, descriptions=descriptions)
     packer.packing_plan = [
         (to_mm(it['position'][0]), to_mm(it['position'][1]), to_mm(it['position'][2]),
          to_mm(it['dimensions'][0]), to_mm(it['dimensions'][1]), to_mm(it['dimensions'][2]))
@@ -824,11 +925,11 @@ def render_cargo_editor(show_priority=False):
     show_priority=True 时（手动模式）额外显示「优先级」列，数值越大越优先放底层。
     「禁止倒放」列两种模式都显示（勾选=落地面固定长×宽，高只能是原始高度）。
     """
-    labels = ['长(m)', '宽(m)', '高(m)', '数量', '重量(kg)', '类型', '禁止倒放']
-    widths = [1.0, 1.0, 1.0, 0.8, 1.0, 0.95, 0.85]
+    labels = ['零件描述 / 品名', '长(m)', '宽(m)', '高(m)', '数量', '重量(kg)', '类型', '禁止倒放']
+    widths = [1.9, 0.9, 0.9, 0.9, 0.7, 0.95, 0.9, 0.8]
     if show_priority:
         labels.append('优先级')
-        widths.append(0.8)
+        widths.append(0.7)
     labels.append('操作')
     widths.append(0.55)
     head = st.columns(widths)
@@ -837,22 +938,25 @@ def render_cargo_editor(show_priority=False):
     for r in st.session_state.rows:
         rid = r['id']
         c = st.columns(widths)
-        r['l'] = c[0].number_input('l', min_value=0.0, value=float(r['l']), step=0.01, format='%.3f',
+        r['desc'] = c[0].text_input('desc', value=str(r.get('desc', '')),
+                                    key=f"desc_{rid}", label_visibility='collapsed',
+                                    placeholder='如：电机端盖 M8')
+        r['l'] = c[1].number_input('l', min_value=0.0, value=float(r['l']), step=0.01, format='%.3f',
                                    key=f"l_{rid}", label_visibility='collapsed')
-        r['w'] = c[1].number_input('w', min_value=0.0, value=float(r['w']), step=0.01, format='%.3f',
+        r['w'] = c[2].number_input('w', min_value=0.0, value=float(r['w']), step=0.01, format='%.3f',
                                    key=f"w_{rid}", label_visibility='collapsed')
-        r['h'] = c[2].number_input('h', min_value=0.0, value=float(r['h']), step=0.01, format='%.3f',
+        r['h'] = c[3].number_input('h', min_value=0.0, value=float(r['h']), step=0.01, format='%.3f',
                                    key=f"h_{rid}", label_visibility='collapsed')
-        r['n'] = c[3].number_input('n', min_value=1, value=int(r['n']), step=1,
+        r['n'] = c[4].number_input('n', min_value=1, value=int(r['n']), step=1,
                                    key=f"n_{rid}", label_visibility='collapsed')
-        r['wt'] = c[4].number_input('wt', min_value=0.0, value=float(r['wt']), step=1.0, format='%.1f',
+        r['wt'] = c[5].number_input('wt', min_value=0.0, value=float(r['wt']), step=1.0, format='%.1f',
                                     key=f"wt_{rid}", label_visibility='collapsed')
         idx = CARGO_TYPES.index(r['type']) if r['type'] in CARGO_TYPES else 0
-        r['type'] = c[5].selectbox('t', CARGO_TYPES, index=idx, key=f"t_{rid}", label_visibility='collapsed')
-        r['no_flip'] = c[6].checkbox('禁止倒放', value=bool(r.get('no_flip', False)),
+        r['type'] = c[6].selectbox('t', CARGO_TYPES, index=idx, key=f"t_{rid}", label_visibility='collapsed')
+        r['no_flip'] = c[7].checkbox('禁止倒放', value=bool(r.get('no_flip', False)),
                                      key=f"nf_{rid}", label_visibility='collapsed',
                                      help='勾选后此类货物不可倒放：落地面固定为长×宽，高只能是原始高度')
-        col_i = 7
+        col_i = 8
         if show_priority:
             r['prio'] = c[col_i].number_input('prio', value=int(r.get('prio', 0)), step=1,
                                               key=f"prio_{rid}", label_visibility='collapsed',
@@ -959,18 +1063,19 @@ def main():
             try:
                 c = b = None
                 sn = ''
+                ds = []
                 if up is not None:
                     if up.name.endswith('.txt'):
-                        c, b, sn = parse_txt(up.getvalue().decode('utf-8'))
+                        c, b, sn, ds = parse_txt(up.getvalue().decode('utf-8'))
                     else:
-                        c, b, sn = parse_xlsx(io.BytesIO(up.getvalue()))
+                        c, b, sn, ds = parse_xlsx(io.BytesIO(up.getvalue()))
                 elif paste.strip():
-                    c, b, sn = parse_txt(paste)
+                    c, b, sn, ds = parse_txt(paste)
                 else:
                     st.warning('请先上传文件或粘贴文本。')
                 if c:
                     st.session_state.cL, st.session_state.cW, st.session_state.cH = c[0] / MM, c[1] / MM, c[2] / MM
-                    st.session_state.rows = boxes_to_rows(b)
+                    st.session_state.rows = boxes_to_rows(b, ds)
                     st.session_state.ship_no = sn  # 回填发货单号
                     st.success('已导入，请在上方核对后点击“开始计算”。')
                     st.rerun()
@@ -1042,7 +1147,7 @@ def main():
                 st.warning('请先选择 JSON 方案文件。')
 
     # ---- 实时预估与预警（随表格即时更新，无需点击计算）----
-    boxes, no_flip, priority = rows_to_boxes_ex(st.session_state.rows)
+    boxes, no_flip, priority, descriptions = rows_to_boxes_ex(st.session_state.rows)
     with st.container(border=True):
         render_live_estimate(container_mm, boxes, threshold)
 
@@ -1058,7 +1163,8 @@ def main():
             try:
                 packer, fits, msg, stats = run_packing(
                     container_mm, boxes, threshold, mode, budget,
-                    no_flip=no_flip, priority=priority, bottom_metric=bottom_metric)
+                    no_flip=no_flip, priority=priority, bottom_metric=bottom_metric,
+                    descriptions=descriptions)
                 # 需求5：约束导致装不满时，对照无约束原始方案并提示代价
                 note = None
                 if not fits and (any(no_flip) or bottom_metric != 'none'):

@@ -90,7 +90,7 @@ def original_orientation_order(l, w, h):
 # --------------------------------------------------------------------------- #
 class ContainerPacker:
     def __init__(self, container, boxes, weight_threshold=100,
-                 no_flip=None, priority=None, bottom_metric='none'):
+                 no_flip=None, priority=None, bottom_metric='none', descriptions=None):
         """三维装箱器。
 
         新增参数：
@@ -104,6 +104,7 @@ class ContainerPacker:
                          'weight'      —— 重量大的优先放底层
                          'volumetric'  —— 体积重(密度=重量/体积)大的优先放底层
                          'manual'      —— 按 priority 手动优先级放底层
+          descriptions:  每类货物的「零件描述/品名」。可为 list 或 dict{io: str}，仅用于展示与导出。
         """
         self.container = tuple(int(x) for x in container)
         self.boxes = [
@@ -113,6 +114,8 @@ class ContainerPacker:
         self.weight_threshold = float(weight_threshold)
         self.no_flip = self._normalize_flags(no_flip, bool, False)
         self.priority = self._normalize_flags(priority, float, 0.0)
+        self.descriptions = self._normalize_flags(
+            descriptions, lambda v: '' if v is None else str(v), '')
         self.bottom_metric = bottom_metric if bottom_metric in (
             'none', 'weight', 'volumetric', 'manual') else 'none'
         self.container_volume = self.container[0] * self.container[1] * self.container[2]
@@ -300,6 +303,7 @@ class ContainerPacker:
                         'weight': weight,
                         'input_order': io,
                         'original_dimensions': (l / MM, w / MM, h / MM),
+                        'desc': self.descriptions.get(io, ''),
                     })
                 number += 1
         return all_placed, len(self.packing_plan), used_volume, sink_score
