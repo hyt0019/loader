@@ -15,6 +15,7 @@
 """
 import io
 import json
+import re
 import numpy as np
 import plotly.graph_objects as go
 import pandas as pd
@@ -581,6 +582,132 @@ def load_plan_into_packer(plan):
     return packer
 
 
+def _xlsx_table(ws, required_columns):
+    """把网站导出的工作表转成按表头取值的记录，并校验必要列。"""
+    header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    columns = {str(value).strip(): idx for idx, value in enumerate(header) if value is not None}
+    missing = [name for name in required_columns if name not in columns]
+    if missing:
+        raise ValueError(f"工作表“{ws.title}”缺少列：{', '.join(missing)}")
+
+    records = []
+    for values in ws.iter_rows(min_row=2, values_only=True):
+        if not any(value is not None and str(value).strip() for value in values):
+            continue
+        records.append({name: values[idx] if idx < len(values) else None
+                        for name, idx in columns.items()})
+    return records
+
+
+def _xlsx_triplet(value, field_name, allow_zero=False):
+    """解析网站 Excel 中的“长×宽×高”文本。"""
+    numbers = re.findall(r'[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?', str(value or ''))
+    if len(numbers) != 3:
+        raise ValueError(f'{field_name}无法识别：{value!r}')
+    result = tuple(float(number) for number in numbers)
+    if any(number < 0 if allow_zero else number <= 0 for number in result):
+        raise ValueError(f'{field_name}包含无效尺寸：{value!r}')
+    return result
+
+
+def load_plan_xlsx(file_like):
+    """从网站导出的 packing_plan.xlsx 重建 packer 和发货单号。"""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(file_like, data_only=True, read_only=True)
+    required_sheets = ('装箱清单', '分类汇总', '汇总')
+    missing_sheets = [name for name in required_sheets if name not in wb.sheetnames]
+    if missing_sheets:
+        raise ValueError(f"不是网站导出的装箱方案，缺少工作表：{', '.join(missing_sheets)}")
+
+    summary_rows = _xlsx_table(wb['汇总'], ('项目', '数值'))
+    summary = {str(row['项目']).strip(): row['数值'] for row in summary_rows
+               if row.get('项目') is not None}
+    if '集装箱(长×宽×高 m)' not in summary:
+        raise ValueError('汇总表缺少集装箱尺寸')
+    container_m = _xlsx_triplet(summary['集装箱(长×宽×高 m)'], '集装箱尺寸')
+    container = tuple(to_mm(value) for value in container_m)
+    raw_ship_no = summary.get('发货单号')
+    ship_no = '' if raw_ship_no in (None, '', '—', '（未填写）') else str(raw_ship_no).strip()
+
+    category_rows = _xlsx_table(
+        wb['分类汇总'],
+        ('类别', '零件描述', '类型', '规格(长×宽×高 m)', '应装数量', '单件重量(kg)'),
+    )
+    if not category_rows:
+        raise ValueError('分类汇总表没有货物数据')
+
+    categories = []
+    seen_categories = set()
+    for row in category_rows:
+        category = to_int(row['类别'])
+        quantity = to_int(row['应装数量'])
+        weight = to_float(row['单件重量(kg)'])
+        if category <= 0 or category in seen_categories:
+            raise ValueError(f"分类汇总表包含无效或重复类别：{row['类别']!r}")
+        if quantity <= 0 or weight < 0:
+            raise ValueError(f'类别 {category} 的数量或重量无效')
+        seen_categories.add(category)
+        dims_m = _xlsx_triplet(row['规格(长×宽×高 m)'], f'类别 {category} 的规格')
+        type_text = str(row['类型'] or '0').strip()
+        type_code = TYPE_CODES.get(type_text, type_text)
+        description = '' if row['零件描述'] is None else str(row['零件描述'])
+        categories.append((category, dims_m, quantity, weight, type_code, description))
+
+    categories.sort(key=lambda item: item[0])
+    expected = list(range(1, len(categories) + 1))
+    actual = [item[0] for item in categories]
+    if actual != expected:
+        raise ValueError(f'分类汇总表的类别编号应从 1 连续排列，实际为：{actual}')
+
+    boxes = [(to_mm(dims[0]), to_mm(dims[1]), to_mm(dims[2]), quantity, weight, type_code)
+             for _, dims, quantity, weight, type_code, _ in categories]
+    descriptions = [description for _, _, _, _, _, description in categories]
+    packer = ContainerPacker(container, boxes, descriptions=descriptions)
+
+    detail_rows = _xlsx_table(
+        wb['装箱清单'],
+        ('装载顺序', '类别', '零件描述', '类型', '摆放长(m)', '摆放宽(m)', '摆放高(m)',
+         '位置X起点(m)', '位置Y起点(m)', '位置Z起点(m)', '重量(kg)'),
+    )
+    detail_rows.sort(key=lambda row: to_int(row['装载顺序']))
+    type_counts = {}
+    for row in detail_rows:
+        number = to_int(row['装载顺序'])
+        category = to_int(row['类别'])
+        if number <= 0 or category not in seen_categories:
+            raise ValueError(f'装箱清单包含无效的装载顺序或类别：{number}, {category}')
+        placed_m = tuple(to_float(row[name]) for name in ('摆放长(m)', '摆放宽(m)', '摆放高(m)'))
+        position_m = tuple(to_float(row[name]) for name in ('位置X起点(m)', '位置Y起点(m)', '位置Z起点(m)'))
+        if any(value <= 0 for value in placed_m) or any(value < 0 for value in position_m):
+            raise ValueError(f'装载顺序 {number} 的摆放尺寸或位置无效')
+
+        _, original_m, _, category_weight, type_code, category_desc = categories[category - 1]
+        type_counts[type_code] = type_counts.get(type_code, 0) + 1
+        packer.packing_plan.append(tuple(to_mm(value) for value in position_m + placed_m))
+        packer.box_colors.append({
+            'number': number,
+            'type': type_code,
+            'type_count': type_counts[type_code],
+            'weight': to_float(row['重量(kg)'], category_weight),
+            'input_order': category - 1,
+            'original_dimensions': original_m,
+            'desc': category_desc if row['零件描述'] is None else str(row['零件描述']),
+        })
+    return packer, ship_no
+
+
+def load_saved_plan(file_name, content):
+    """按扩展名读取网站导出的 JSON 或 XLSX 方案。"""
+    lower_name = str(file_name).lower()
+    if lower_name.endswith('.json'):
+        plan = json.loads(content.decode('utf-8-sig'))
+        return load_plan_into_packer(plan), str(plan.get('ship_no', '') or '')
+    if lower_name.endswith('.xlsx'):
+        return load_plan_xlsx(io.BytesIO(content))
+    raise ValueError('仅支持网站导出的 JSON 或 XLSX 方案文件')
+
+
 # --------------------------------------------------------------------------- #
 #                        实时预估 / 预警（即时反馈）                           #
 # --------------------------------------------------------------------------- #
@@ -895,7 +1022,7 @@ def render_guide():
 #### 常见问题
 - **货物太多，一次录不完？** 随时展开「导出当前清单」存成 txt 或 xlsx，下次导入即可接着录，进度不丢。
   导出的文件带中文注释但**可以原样再导入**，也能用记事本/Excel 直接编辑。
-- **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json`，点「载入方案查看」即可重现，无需重算。
+- **想回看以前算过的方案？** 左侧「查看已保存方案」上传之前下载的 `packing_plan.json` 或 `packing_plan.xlsx`，点「载入方案查看」即可重现，无需重算。
 - **提示装不下怎么办？** 程序会尽量多装并告诉你装了多少、利用率多少。可尝试：改用增强版、加大集装箱尺寸、或减少货量。
 - **长宽填反了有影响吗？** 没有。程序会自动尝试两种朝向并取更优结果。
 """)
@@ -1002,6 +1129,10 @@ def main():
     for _k in ('cL', 'cW', 'cH'):
         st.session_state.setdefault(_k, None)  # 默认留空
     st.session_state.setdefault('ship_no', '')  # 发货单号（整柜一个）
+    # 导入按钮位于 ship_no 输入框之后，不能在同一轮直接修改该 widget key。
+    # 先暂存，下一轮在输入框创建之前应用，避免 StreamlitAPIException。
+    if '_pending_ship_no' in st.session_state:
+        st.session_state.ship_no = st.session_state.pop('_pending_ship_no')
 
     # ---- 工作模式切换（自动 / 手动），需在渲染货物清单前确定 ----
     with st.sidebar:
@@ -1066,6 +1197,8 @@ def main():
             st.rerun()
 
     with st.expander('从文件 / 文本导入（导入后会填入上面的清单供核对）', icon=':material/upload_file:'):
+        if st.session_state.pop('_cargo_import_success', False):
+            st.success('已导入，请在上方核对后点击“开始计算”。')
         up = st.file_uploader('上传 txt 或 xlsx', type=['txt', 'xlsx'])
         paste = st.text_area('或粘贴数据文本（第一行集装箱长宽高，第二行种类数，其后每行：长 宽 高 数量 重量 类型）',
                              height=120)
@@ -1086,8 +1219,8 @@ def main():
                 if c:
                     st.session_state.cL, st.session_state.cW, st.session_state.cH = c[0] / MM, c[1] / MM, c[2] / MM
                     st.session_state.rows = boxes_to_rows(b, ds)
-                    st.session_state.ship_no = sn  # 回填发货单号
-                    st.success('已导入，请在上方核对后点击“开始计算”。')
+                    st.session_state._pending_ship_no = sn  # 下一轮、widget 创建前回填
+                    st.session_state._cargo_import_success = True
                     st.rerun()
             except Exception as e:  # noqa
                 st.error(f'导入失败：{e}')
@@ -1135,13 +1268,15 @@ def main():
 
         st.divider()
         st.markdown('**查看已保存方案**')
-        plan_file = st.file_uploader('导入方案 JSON', type=['json'], label_visibility='collapsed')
+        if st.session_state.pop('_plan_import_success', False):
+            st.success('方案已载入，请在右侧查看。')
+        plan_file = st.file_uploader('导入方案 JSON 或 XLSX', type=['json', 'xlsx'],
+                                     label_visibility='collapsed')
         if st.button('载入方案查看', icon=':material/folder_open:', use_container_width=True):
             if plan_file is not None:
                 try:
-                    plan = json.loads(plan_file.getvalue().decode('utf-8'))
-                    pk = load_plan_into_packer(plan)
-                    st.session_state.ship_no = str(plan.get('ship_no', '') or '')  # 回填发货单号
+                    pk, imported_ship_no = load_saved_plan(plan_file.name, plan_file.getvalue())
+                    st.session_state._pending_ship_no = imported_ship_no  # 下一轮、widget 创建前回填
                     used = sum(l * w * h for _, _, _, l, w, h in pk.packing_plan)
                     st.session_state.result = {
                         'packer': pk, 'fits': len(pk.packing_plan) == pk.total_units, 'msg': '',
@@ -1149,12 +1284,12 @@ def main():
                         'stats': {'placed': len(pk.packing_plan), 'total': pk.total_units,
                                   'utilization': used / pk.container_volume if pk.container_volume else 0.0,
                                   'evaluations': '', 'seconds': '', 'optimal_full': True}}
-                    st.success('方案已载入，请在右侧查看。')
+                    st.session_state._plan_import_success = True
                     st.rerun()
                 except Exception as e:  # noqa
                     st.error(f'方案文件无法解析：{e}')
             else:
-                st.warning('请先选择 JSON 方案文件。')
+                st.warning('请先选择 JSON 或 XLSX 方案文件。')
 
     # ---- 实时预估与预警（随表格即时更新，无需点击计算）----
     boxes, no_flip, priority, descriptions = rows_to_boxes_ex(st.session_state.rows)
