@@ -47,6 +47,22 @@ def _extract_desc_from_comment(raw):
     return ''
 
 
+def _parse_bool(value, default=False):
+    """把 Excel/会话中的常见布尔写法规范为 bool，避免非空字符串“否”被当成 True。"""
+    if value is None:
+        return bool(default)
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {'是', 'true', 'yes', 'y', '1', '勾选', '已勾选', '禁止'}:
+        return True
+    if text in {'否', 'false', 'no', 'n', '0', '', '未勾选', '允许'}:
+        return False
+    return bool(default)
+
+
 def parse_txt(text):
     ship_no = _extract_ship_no(text)
     # 跳过空行与整行注释（# 开头），使带注释的导出文件可以原样再导入
@@ -85,7 +101,7 @@ def parse_xlsx(file_like):
             if isinstance(v, str) and v.startswith('零件描述'):
                 hdr = rr
                 break
-        boxes, descriptions = [], []
+        boxes, descriptions, no_flip, priority = [], [], [], []
         if hdr:
             for rr in range(hdr + 1, sheet.max_row + 1):
                 l = sheet.cell(row=rr, column=2).value
@@ -100,7 +116,10 @@ def parse_xlsx(file_like):
                 boxes.append((to_mm(l), to_mm(w), to_mm(h), to_int(n), to_float(wt), code))
                 dv = sheet.cell(row=rr, column=1).value
                 descriptions.append('' if dv is None else str(dv))
-        return container, boxes, ship_no, descriptions
+                no_flip.append(_parse_bool(sheet.cell(row=rr, column=8).value, False))
+                priority.append(to_float(sheet.cell(row=rr, column=9).value, 0.0))
+        wb.close()
+        return container, boxes, ship_no, descriptions, no_flip, priority
 
     # 旧版定位格式（向后兼容）：第一行为集装箱长宽高
     container = tuple(to_mm(cell.value) for cell in list(sheet[1])[:3])
@@ -112,7 +131,9 @@ def parse_xlsx(file_like):
         row = [cell.value for cell in sheet[i]]
         boxes.append((to_mm(row[0]), to_mm(row[1]), to_mm(row[2]),
                       to_int(row[3]), to_float(row[4]), str(row[5])))
-    return container, boxes, ship_no, [''] * len(boxes)
+    wb.close()
+    return (container, boxes, ship_no, [''] * len(boxes),
+            [False] * len(boxes), [0.0] * len(boxes))
 
 
 # --------------------------------------------------------------------------- #
@@ -159,7 +180,7 @@ def _new_row(l=0.0, w=0.0, h=0.0, n=1, wt=0.0, type='木箱', no_flip=False, pri
     st.session_state.next_id = rid + 1
     return {'id': rid, 'l': float(l), 'w': float(w), 'h': float(h),
             'n': int(n), 'wt': float(wt), 'type': type,
-            'no_flip': bool(no_flip), 'prio': int(prio), 'desc': str(desc)}
+            'no_flip': _parse_bool(no_flip, False), 'prio': int(prio), 'desc': str(desc)}
 
 
 SAMPLE_CONTAINER = (5.8, 2.35, 2.35)  # 示例集装箱：20 尺柜近似内径（长×宽×高，米）
@@ -182,14 +203,29 @@ def sample_rows():
     return [_new_row(*d) for d in data]
 
 
-def boxes_to_rows(boxes, descriptions=None):
+def boxes_to_rows(boxes, descriptions=None, no_flip=None, priority=None):
     descriptions = descriptions or []
+    no_flip = no_flip or []
+    priority = priority or []
     rows = []
     for i, (l, w, h, n, weight, t) in enumerate(boxes):
         d = descriptions[i] if i < len(descriptions) else ''
+        nf = _parse_bool(no_flip[i], False) if i < len(no_flip) else False
+        prio = to_int(priority[i]) if i < len(priority) else 0
         rows.append(_new_row(l / MM, w / MM, h / MM, n, weight,
-                             TYPE_LABELS.get(str(t), str(t)), desc=d))
+                             TYPE_LABELS.get(str(t), str(t)), no_flip=nf,
+                             prio=prio, desc=d))
     return rows
+
+
+def install_imported_rows(boxes, descriptions=None, no_flip=None, priority=None):
+    """把文件内容安装到会话，并同步带 key 的复选框/优先级控件状态。"""
+    imported_rows = boxes_to_rows(boxes, descriptions, no_flip, priority)
+    for row in imported_rows:
+        st.session_state[f"nf_{row['id']}"] = row['no_flip']
+        st.session_state[f"prio_{row['id']}"] = row['prio']
+    st.session_state.rows = imported_rows
+    return imported_rows
 
 
 def rows_to_boxes(rows):
@@ -213,7 +249,7 @@ def rows_to_boxes_ex(rows):
         t = TYPE_CODES.get(r['type'], r['type'])
         if l > 0 and w > 0 and h > 0 and n > 0:
             boxes.append((l, w, h, n, wt, t))
-            no_flip.append(bool(r.get('no_flip', False)))
+            no_flip.append(_parse_bool(r.get('no_flip', False), False))
             priority.append(to_float(r.get('prio', 0)))
             descriptions.append(str(r.get('desc', '')))
     return boxes, no_flip, priority, descriptions
@@ -294,7 +330,7 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
         label = TYPE_LABELS.get(code, str(r['type']))
         vals = [str(r.get('desc', '')), float(r['l']), float(r['w']), float(r['h']),
                 int(r['n']), float(r['wt']), label,
-                '是' if r.get('no_flip') else '否', int(r.get('prio', 0))]
+                '是' if _parse_bool(r.get('no_flip'), False) else '否', int(r.get('prio', 0))]
         for j, v in enumerate(vals, start=1):
             c = ws.cell(row=rrow, column=j, value=v)
             c.border = border
@@ -1207,18 +1243,24 @@ def main():
                 c = b = None
                 sn = ''
                 ds = []
+                imported_no_flip = []
+                imported_priority = []
                 if up is not None:
                     if up.name.endswith('.txt'):
                         c, b, sn, ds = parse_txt(up.getvalue().decode('utf-8'))
                     else:
-                        c, b, sn, ds = parse_xlsx(io.BytesIO(up.getvalue()))
+                        (c, b, sn, ds,
+                         imported_no_flip, imported_priority) = parse_xlsx(io.BytesIO(up.getvalue()))
                 elif paste.strip():
                     c, b, sn, ds = parse_txt(paste)
                 else:
                     st.warning('请先上传文件或粘贴文本。')
                 if c:
                     st.session_state.cL, st.session_state.cW, st.session_state.cH = c[0] / MM, c[1] / MM, c[2] / MM
-                    st.session_state.rows = boxes_to_rows(b, ds)
+                    # Streamlit 对带 key 的控件优先采用 session_state；在下一轮渲染前
+                    # 同步控件键，确保 Excel 中的勾选值立即显示到复选框。
+                    install_imported_rows(
+                        b, ds, imported_no_flip, imported_priority)
                     st.session_state._pending_ship_no = sn  # 下一轮、widget 创建前回填
                     st.session_state._cargo_import_success = True
                     st.rerun()
