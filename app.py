@@ -924,7 +924,7 @@ LOADING_HTML = """
 HERO_HTML = """
 <div class="hero">
   <p class="hero-title"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" style="width:26px;height:26px;vertical-align:-5px;margin-right:9px;"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5"/><path d="M12 12v10"/></svg>智能集装箱装箱系统</p>
-  <p class="hero-sub">精确装箱 · 遗传搜索逼近最优 · 交互式 3D 可视化 · 一键导出方案</p>
+  <p class="hero-sub">精确装箱 · 混合启发式逼近最优 · 交互式 3D 可视化 · 一键导出方案</p>
   <div class="hero-badges">
     <span class="hero-badge">标准版 / 增强版双模式</span>
     <span class="hero-badge">实时体积 · 超重预警</span>
@@ -979,7 +979,7 @@ def render_guide():
         st.markdown("""
 #### 这是什么
 一个**集装箱三维装箱计算工具**。你告诉它集装箱的尺寸和要装的货物（尺寸、数量、重量、类型），
-它会自动算出**每一件货放在哪里、怎么摆**，让空间利用率尽可能高，并给出三维图和可下载的装箱清单。
+它会自动算出**每一件货放在哪里、怎么摆**，优先装入尽可能多的件数，再提高空间利用率，并给出三维图和可下载的装箱清单。
 
 计算时会自动遵守这些实际装载规则：
 - **底层优先（软规则）**：可选择让「重的」或「体积重(密度)大的」货物**优先放到底层**；这是偏好而非硬性限制，实在放不下时仍允许叠放，更贴近真实装柜。
@@ -999,10 +999,10 @@ def render_guide():
      下次再用「**从文件 / 文本导入**」读回来接着填，**不用重新录入**。
 3. **设参数**（左侧栏）：
    - **工作模式**：**自动模式** / **手动模式**（见上文说明）。
-   - **底层优先指标**（自动模式）：可启用「按重量优先」或「按体积重/密度优先」二选一；密度大的货物更耐压，适合放底层。两项都不启用则只追求空间利用率。
+   - **底层优先指标**（自动模式）：可启用「按重量优先」或「按体积重/密度优先」二选一；密度大的货物更耐压，适合放底层。两项都不启用时仍先最大化装入件数，再比较空间利用率。
    - **优先级**（手动模式）：在货物清单里给每类货物填数字，越大越靠底层。
    - **重货预警阈值(kg)**：仅用于「实时预估」里的重货提示，不再作为硬性叠放限制。
-   - **计算模式**：**标准版**快速稳定；**增强版**用遗传搜索反复优化，装载率更高但更慢（可设搜索时间上限）。
+   - **计算模式**：**标准版**快速稳定；**增强版**组合竖向列生成、二维极大空矩形排样和遗传搜索，通常能找到更紧密的方案（可设搜索时间上限，默认 180 秒）。
 4. **点「开始计算」**，等待结果。
 5. **看结果 & 导出**：查看装载率、三维图与清单，底部可下载 **Excel 装箱清单** 与 **JSON 方案**。
 
@@ -1257,13 +1257,13 @@ def main():
             use_vol = st.toggle('按体积重 / 密度优先（密度大的在下）', key='m_vol', on_change=_excl_vol)
             bottom_metric = 'weight' if use_weight else ('volumetric' if use_vol else 'none')
             if bottom_metric == 'none':
-                st.caption('两项均未启用：仅以空间利用率为目标（不指定底层优先）。')
+                st.caption('两项均未启用：优先最大化装入件数，其次空间利用率（不指定底层优先）。')
         threshold = st.number_input('重货预警阈值 (kg)：仅用于上方「实时预估」提示', value=100.0, step=10.0)
         mode_label = st.radio('计算模式', ['标准版（快速稳定）', '增强版（搜索逼近最优）'])
         mode = 'enhanced' if mode_label.startswith('增强') else 'standard'
-        budget = 60.0
+        budget = 180.0
         if mode == 'enhanced':
-            budget = st.slider('增强版搜索时间上限（秒）', 10, 600, 60, step=10)
+            budget = st.slider('增强版搜索时间上限（秒）', 10, 600, 180, step=10)
         go_btn = st.button('开始计算', use_container_width=True, type='primary')
 
         st.divider()
