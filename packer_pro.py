@@ -8,7 +8,7 @@
      复现最初版(Decimal 版)的逐箱装箱决策，结果稳定、可复现、速度快。
 
   2) 增强版（混合启发式搜索）
-     组合竖向列生成、二维极大空矩形排样、遗传算法与随机重启逼近最优。
+     组合通用列/层生成、二维极大空矩形排样、遗传算法与随机重启逼近最优。
      以标准版的解作为种子并采用【精英保留】，只有严格更优才替换，
      并在达到 100% 装载时立即停止——因此增强版在数学上保证【不劣于】标准版。
 
@@ -586,6 +586,205 @@ class ContainerPacker:
             self._place(*placement)
         self.box_colors = [dict(info) for info in colors]
 
+    # ---------------- 增强版：通用列底座 + 顶层续装 ---------------- #
+    def _column_layer_groups(self):
+        """合并旋转后几何等价的货物，保留每一件的原输入类别。
+
+        可倒放货物按三边排序后的尺寸合并；禁止倒放货物只合并长宽可互换且
+        原始高度相同的类别。这样搜索维度与货物种类数相关，而不是与件数相关。
+        """
+        grouped = {}
+        for l, w, h, quantity, weight, box_type, io in self.boxes:
+            if self.no_flip.get(io):
+                key = (min(l, w), max(l, w), h, True)
+            else:
+                key = (*sorted((l, w, h)), False)
+            if key not in grouped:
+                grouped[key] = {'key': key, 'units': [], 'representative': io}
+            grouped[key]['units'].extend([io] * quantity)
+        return list(grouped.values())
+
+    def _best_vertical_orientation(self, group):
+        """选择单位货物占用地面最少、同时列高利用率高的竖向朝向。"""
+        io = group['representative']
+        l, w, h = self.boxes[io][:3]
+        candidates = []
+        for orientation in self._allowed(io, sorted_orientations(l, w, h)):
+            capacity = self.container[2] // orientation[2]
+            if capacity <= 0:
+                continue
+            area = orientation[0] * orientation[1]
+            candidates.append(((area / capacity,
+                                self.container[2] - capacity * orientation[2],
+                                area, orientation[2]), orientation, capacity))
+        if not candidates:
+            return None
+        _, orientation, capacity = min(candidates, key=lambda item: item[0])
+        return orientation, capacity
+
+    @staticmethod
+    def _column_layer_sequences(rectangles, seed):
+        """为二维列底座生成少量确定性/分块交错序列。"""
+        sequences = [
+            sorted(rectangles,
+                   key=lambda rectangle: (rectangle[0] * rectangle[1],
+                                          max(rectangle[0], rectangle[1])),
+                   reverse=True),
+            sorted(rectangles,
+                   key=lambda rectangle: (max(rectangle[0], rectangle[1]),
+                                          rectangle[0] * rectangle[1]),
+                   reverse=True),
+        ]
+        for chunk_size in (8, 4, 2):
+            sequences.append(ContainerPacker._chunk_rectangles(
+                rectangles, chunk_size, seed + chunk_size))
+        return sequences
+
+    def _materialize_layer_columns(self, layout, remainder_units):
+        """把二维列底座展开，再用相同硬约束内核把余货续装到列顶。"""
+        self._reset_state()
+        number = 1
+        type_count = Counter()
+        used_volume = 0
+        sink_score = 0.0
+        container_height = self.container[2]
+
+        def add_unit(io, position):
+            nonlocal number, used_volume, sink_score
+            l, w, h, quantity, weight, box_type, _ = self.boxes[io]
+            self._place(*position)
+            type_count[box_type] += 1
+            self.box_colors.append({
+                'number': number,
+                'type': box_type,
+                'type_count': type_count[box_type],
+                'weight': weight,
+                'input_order': io,
+                'original_dimensions': (l / MM, w / MM, h / MM),
+                'desc': self.descriptions.get(io, ''),
+            })
+            used_volume += position[3] * position[4] * position[5]
+            sink_score += self._sink_key(self.boxes[io]) * (container_height - position[2])
+            number += 1
+
+        for x, y, footprint_length, footprint_width, payload in layout:
+            orientation, units = payload
+            length, width, height = orientation
+            if (footprint_length, footprint_width) == (width, length):
+                length, width = width, length
+            if (length, width) != (footprint_length, footprint_width):
+                return None
+            z = 0
+            for io in units:
+                weight = self.boxes[io][4]
+                position = (x, y, z, length, width, height)
+                if not self.can_place(*position, weight):
+                    return None
+                add_unit(io, position)
+                z += height
+
+        # 低高度/大接触面朝向优先，适合利用密集列形成的平整顶面。所有位置仍由
+        # can_place 复核边界、碰撞和 60% 支撑，不引入任何样例专用几何假设。
+        for io in remainder_units:
+            l, w, h = self.boxes[io][:3]
+            orientations = self._allowed(io, sorted_orientations(l, w, h))
+            orientations = sorted(
+                orientations,
+                key=lambda orientation: (orientation[2],
+                                         -orientation[0] * orientation[1],
+                                         orientation[1], orientation[0]))
+            chosen = None
+            for x, y, z in sorted(self.points, key=lambda point: (point[2], point[1], point[0])):
+                for length, width, height in orientations:
+                    if self.can_place(x, y, z, length, width, height,
+                                      self.boxes[io][4]):
+                        chosen = (x, y, z, length, width, height)
+                        break
+                if chosen is not None:
+                    break
+            if chosen is None:
+                break
+            add_unit(io, chosen)
+
+        return (len(self.packing_plan), used_volume, sink_score,
+                list(self.packing_plan), [dict(info) for info in self.box_colors])
+
+    def _layer_column_candidate(self, deadline=None, rng_seed=20260719):
+        """通用“列底座 + 顶层续装”候选。
+
+        对每个几何组轮流保留一部分货物作为顶层余货，其余类型先组成竖向密实列；
+        列投影用 MaxRects 排样，再由三维极点内核把余货续装到列顶。该方法对尺寸、
+        数量和类别均无硬编码，尤其能补足逐类贪心无法回收大面积顶部空间的短板。
+        """
+        if self.total_units < 20:
+            return None
+        groups = self._column_layer_groups()
+        if len(groups) < 2:
+            return None
+        orientations = []
+        for group in groups:
+            selected = self._best_vertical_orientation(group)
+            if selected is None:
+                return None
+            orientations.append(selected)
+
+        # 优先尝试“竖放与平放高度差”最大的组：它最可能以密实列放一部分、
+        # 再以低矮层覆盖其他列的顶面。该排序只依赖几何比例。
+        overlay_order = sorted(
+            range(len(groups)),
+            key=lambda index: (
+                orientations[index][0][2] /
+                min(orientation[2] for orientation in self._allowed(
+                    groups[index]['representative'],
+                    sorted_orientations(*self.boxes[groups[index]['representative']][:3]))),
+                len(groups[index]['units'])),
+            reverse=True)
+        best = None
+        total = self.total_units
+        ratios = (0.5, 0.4, 0.6, 0.3, 0.7, 0.8)
+
+        for overlay_index in overlay_order:
+            for ratio in ratios:
+                if deadline is not None and time.time() >= deadline:
+                    return None if best is None else best[1]
+                rectangles = []
+                remainder_units = []
+                for group_index, group in enumerate(groups):
+                    orientation, capacity = orientations[group_index]
+                    units = group['units']
+                    maximum_columns = (len(units) + capacity - 1) // capacity
+                    if group_index == overlay_index:
+                        column_count = max(1, int(maximum_columns * ratio))
+                    else:
+                        column_count = maximum_columns
+                    base_count = min(len(units), column_count * capacity)
+                    for start in range(0, base_count, capacity):
+                        column_units = units[start:min(start + capacity, base_count)]
+                        rectangles.append((orientation[0], orientation[1],
+                                           (orientation, column_units)))
+                    remainder_units.extend(units[base_count:])
+
+                sequences = self._column_layer_sequences(
+                    rectangles, rng_seed + overlay_index * 101 + int(ratio * 100))
+                for sequence in sequences:
+                    # compact 首选能同时控制两个方向的外包络；其余准则用于处理
+                    # 不同长宽比组合，属于通用二维排样重启。
+                    for mode in ('compact', 'bssf', 'baf', 'bottom_left'):
+                        if deadline is not None and time.time() >= deadline:
+                            return None if best is None else best[1]
+                        layout = _maxrects_pack(self.container[:2], sequence, mode)
+                        if len(layout) != len(rectangles):
+                            continue
+                        candidate = self._materialize_layer_columns(layout, remainder_units)
+                        if candidate is None:
+                            continue
+                        value = candidate[:3]
+                        if best is None or value > best[0]:
+                            best = (value, candidate)
+                        if value[0] == total:
+                            return candidate
+        return None if best is None else best[1]
+
     # ---------------- 单个策略的装箱 ---------------- #
     def _run_policy(self, ordered_types, orient_map, record=True):
         """按给定"类别顺序 + 每类朝向顺序"装箱。
@@ -759,10 +958,10 @@ class ContainerPacker:
         return False, (f"已按您设定的优先级尽力装载：装入 {placed}/{total} 件，"
                        f"空间利用率 {used / self.container_volume * 100:.1f}%（其余货物放不下）")
 
-    # ---------------- 对外：增强版（列生成 / MaxRects / 遗传搜索） ---------------- #
-    def pack_enhanced(self, time_budget=180.0, rng_seed=20260719,
+    # ---------------- 对外：增强版（列/层生成 / MaxRects / 遗传搜索） ---------------- #
+    def pack_enhanced(self, time_budget=600.0, rng_seed=20260719,
                       population=24, verbose=True):
-        """增强版：列生成 + MaxRects + 遗传/随机重启，保证不劣于标准版。
+        """增强版：列/层生成 + MaxRects + 遗传/随机重启，保证不劣于标准版。
 
         time_budget: 搜索时间上限（秒）；达到 100% 装载会提前结束。
         返回 (是否装入, 说明, 统计信息 dict)。
@@ -783,38 +982,58 @@ class ContainerPacker:
         evals = 0
         best_fit = None
         best = None  # (swap_xy, (ordered_types, orient_map))
-        best_plan = None  # 列式混合启发式直接产生的 (plan, colors)
+        best_plan = None  # 混合启发式直接产生的 (plan, colors)
+        best_strategy = None
 
         # --- 评估：适应度 = (已装件数, 已装体积, 底层得分)。客户目标是先尽量
         #     装完件数，再比较空间利用率；底层得分只作最终同分项。---
         def ev(swap, pol):
-            nonlocal evals, best_fit, best, best_plan
+            nonlocal evals, best_fit, best, best_plan, best_strategy
             _, placed, used, sink = self._solve(swap, pol[0], pol[1], record=False)
             evals += 1
             fit = (placed, used, sink)
             if best_fit is None or fit > best_fit:
                 best_fit, best = fit, (swap, pol)
                 best_plan = None
+                best_strategy = 'extreme_point_search'
             return fit
+
+        def consider_direct(candidate, strategy):
+            """接纳直接生成的候选；精英比较保证新算法绝不覆盖更优旧解。"""
+            nonlocal evals, best_fit, best_plan, best_strategy
+            if candidate is None:
+                return
+            placed, used, sink, plan, colors = candidate
+            evals += 1
+            fit = (placed, used, sink)
+            if best_fit is None or fit > best_fit:
+                best_fit = fit
+                best_plan = (plan, colors)
+                best_strategy = strategy
+
+        # --- 通用列底座 + 顶层续装。只要存在可倒放货物就先尝试；它对客户尺寸、
+        #     数量与坐标无硬编码，并且达到全装时立即结束。---
+        if (time.time() - t0 < time_budget and
+                any(not self.no_flip.get(box[6]) for box in self.boxes)):
+            layered = self._layer_column_candidate(
+                deadline=t0 + time_budget, rng_seed=rng_seed)
+            consider_direct(layered, 'layer_columns')
 
         # --- 高重复货物的列生成 + 二维极大空矩形排样。先运行它，避免很短的
         #     用户预算被确定性种子耗尽；随后仍会评估标准版种子，保证不劣于标准版。---
-        if time.time() - t0 < time_budget:
+        if (best_fit is None or best_fit[0] < total) and time.time() - t0 < time_budget:
             dense = self._dense_column_candidate(deadline=t0 + time_budget, rng_seed=rng_seed)
-            if dense is not None:
-                dense_placed, dense_used, dense_sink, dense_plan, dense_colors = dense
-                evals += 1
-                best_fit = (dense_placed, dense_used, dense_sink)
-                best_plan = (dense_plan, dense_colors)
+            consider_direct(dense, 'dense_columns')
 
         # --- 确定性种子：长宽两种朝向 × 多种排序（保证不劣于标准版）---
-        for swap in (False, True):
-            for pol in self._deterministic_policies():
-                ev(swap, pol)
+        if best_fit is None or best_fit[0] < total:
+            for swap in (False, True):
+                for pol in self._deterministic_policies():
+                    ev(swap, pol)
+                    if best_fit[0] >= total:
+                        break
                 if best_fit[0] >= total:
                     break
-            if best_fit[0] >= total:
-                break
 
         # --- 遗传搜索（种子未达 100% 时启动；长宽朝向也作为基因参与进化）---
         if best_fit[0] < total:
@@ -887,7 +1106,7 @@ class ContainerPacker:
             'evaluations': evals,
             'seconds': round(time.time() - t0, 1),
             'optimal_full': placed == total,
-            'strategy': 'dense_columns' if best_plan is not None else 'extreme_point_search',
+            'strategy': best_strategy or 'extreme_point_search',
         }
         if verbose:
             print(f"  [增强版] 评估 {evals} 个方案，用时 {stats['seconds']}s，"
@@ -1075,14 +1294,14 @@ def choose_mode():
     """启动时选择 标准版 / 增强版。"""
     print("\n请选择装箱模式：")
     print("  1. 标准版   —— 与最初版结果一致，快速、稳定、可复现")
-    print("  2. 增强版   —— 列生成/二维排样/遗传混合搜索，保证不劣于标准版（较慢）")
+    print("  2. 增强版   —— 列/层生成、二维排样与遗传混合搜索，保证不劣于标准版（较慢）")
     choice = input("请输入选项 (1 或 2，直接回车默认 1): ").strip()
     if choice == "2":
-        raw = input("增强版搜索时间上限(秒，直接回车默认 180): ").strip()
+        raw = input("增强版搜索时间上限(秒，直接回车默认 600): ").strip()
         try:
-            budget = float(raw) if raw else 180.0
+            budget = float(raw) if raw else 600.0
         except ValueError:
-            budget = 180.0
+            budget = 600.0
         return "enhanced", budget
     return "standard", 0.0
 

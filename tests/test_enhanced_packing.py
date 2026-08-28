@@ -2,6 +2,7 @@ import sys
 import types
 import unittest
 from collections import Counter
+from itertools import permutations
 
 # 算法回归不需要启动 Matplotlib 图形后端。
 matplotlib_stub = types.ModuleType('matplotlib')
@@ -25,6 +26,49 @@ from packer_pro import ContainerPacker
 
 class EnhancedPackingRegressionTests(unittest.TestCase):
     """客户 GT10B-2026 清单的匿名几何回归（整数毫米）。"""
+
+    def test_enhanced_keeps_standard_result_as_elite_lower_bound(self):
+        boxes = [
+            (310, 250, 300, 15, 8.0, 'A'),
+            (280, 220, 350, 12, 6.0, 'B'),
+            (190, 170, 200, 20, 3.0, 'C'),
+        ]
+        standard = ContainerPacker((1200, 1000, 1000), boxes)
+        standard.pack()
+
+        enhanced = ContainerPacker((1200, 1000, 1000), boxes)
+        _, _, stats = enhanced.pack_enhanced(time_budget=0.25, verbose=False)
+
+        self.assertGreaterEqual(stats['placed'], len(standard.packing_plan))
+        self.assert_valid_plan(enhanced)
+
+    def test_layer_column_strategy_fits_customer_case_with_all_rotations(self):
+        boxes = [
+            (405, 400, 405, 307, 17.5, '1'),
+            (365, 365, 360, 27, 13.0, '1'),
+            (460, 280, 580, 88, 11.4, '1'),
+            (350, 310, 300, 1, 19.1, '1'),
+            (460, 280, 580, 12, 5.5, '1'),
+        ]
+        packer = ContainerPacker(
+            (5800, 2350, 2350), boxes, no_flip=[False] * len(boxes))
+        fits, message, stats = packer.pack_enhanced(time_budget=10, verbose=False)
+
+        self.assertTrue(fits, message)
+        self.assertEqual(stats['placed'], 435)
+        self.assertTrue(stats['optimal_full'])
+        self.assertEqual(stats['strategy'], 'layer_columns')
+        self.assertEqual(
+            Counter(info['input_order'] for info in packer.box_colors),
+            Counter({0: 307, 1: 27, 2: 88, 3: 1, 4: 12}),
+        )
+        allowed = {
+            io: set(permutations(box[:3]))
+            for io, box in enumerate(boxes)
+        }
+        for position, info in zip(packer.packing_plan, packer.box_colors):
+            self.assertIn(position[3:], allowed[info['input_order']])
+        self.assert_valid_plan(packer)
 
     def test_dense_column_strategy_improves_customer_case_and_is_valid(self):
         boxes = [
