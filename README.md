@@ -1,85 +1,131 @@
-# 📦 智能集装箱装箱系统
+<p align="center">
+  <img src="docs/assets/readme-hero.svg" alt="HYT Container Load Planner" width="100%" />
+</p>
 
-精确装箱 · 混合启发式逼近最优 · 交互式 3D 可视化 · 一键导出方案
+<p align="center">
+  面向真实装柜约束的三维装箱系统。把货物清单转化为可执行、可复核、可导出的装载方案。
+</p>
 
-一个三维装箱（3D bin packing）计算工具：给定集装箱尺寸和一批货物（长/宽/高/数量/重量/类型），
-自动计算摆放方案，支持重量叠放约束与 60% 底面支撑约束，并提供网页版交互界面与桌面命令行两种使用方式。
+<p align="center">
+  <a href="https://loader-hyt.streamlit.app/"><strong>打开在线工作台 →</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#本地运行">本地运行</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#算法与约束">算法说明</a>
+</p>
 
 ---
 
-## ✨ 功能特点
+## 产品概览
 
-- **两种计算模式**
-  - **标准版**：确定性启发式（极点 + Deepest-Bottom-Left），结果稳定、可复现、速度快。
-  - **增强版**：组合通用列/层生成、二维 MaxRects 排样和遗传/随机重启搜索；按“件数 → 体积利用率 → 底层偏好”排序，**保证不劣于标准版**，达到 100% 装载即停止。网页默认最多搜索 600 秒。
-- **整数毫米几何内核**：碰撞/支撑/边界判定全部整数运算，无浮点误差；网格空间索引 + 增量极点，速度快。
-- **交互式 3D 可视化**（网页版，Plotly）：可旋转/缩放/悬停；按类别切换高亮；逐层查看装载过程。
-- **实时预估与预警**：填数据即时显示体积占比、总重，并预警超体积/超尺寸/重货。
-- **一键导出**：Excel 装箱清单、JSON 方案；两种格式都可重新导入回看。
+HYT Container Load Planner 接收集装箱尺寸与货物清单，计算每件货物的摆放位置和朝向，并在同一工作台内完成数据录入、实时预估、三维复核与方案交付。
 
-## 🗂️ 项目结构
+<p align="center">
+  <img src="docs/assets/product-preview.png" alt="HYT Container Load Planner 网页工作台" width="100%" />
+</p>
 
+| 计算 | 复核 | 交付 |
+| :--- | :--- | :--- |
+| 标准版快速生成稳定方案；增强版通过列/层生成、MaxRects 与多策略搜索持续改进 | 整数毫米几何内核逐件校验边界、碰撞、朝向与支撑 | Excel / JSON 双格式导出；保存的方案可重新导入网站查看 |
+
+## 为什么是它
+
+- **以装入件数为第一目标**：先尽可能装完，再比较空间利用率与底层偏好。
+- **增强版不劣于标准版**：标准版结果始终作为精英下界，新候选只有更优时才会替换。
+- **为真实操作设计**：支持六向旋转、禁止倒放、重货/密度底层优先以及至少 60% 的底面支撑。
+- **计算结果可解释**：三维视图支持类别高亮、透明模式和长/宽/高分段查看。
+- **输入输出闭环**：网页表格、TXT、XLSX 均可作为清单入口；方案可导出为 XLSX 或 JSON 后再次载入。
+
+## 算法与约束
+
+```mermaid
+flowchart LR
+    A[货物清单] --> B[整数毫米归一化]
+    B --> C{求解模式}
+    C -->|标准版| D[极点 + DBL]
+    C -->|增强版| E[列 / 层候选]
+    E --> F[MaxRects 底面排样]
+    F --> G[顶层续装 + 多策略搜索]
+    D --> H[统一几何校验]
+    G --> H
+    H --> I[3D 方案与 XLSX / JSON]
 ```
-app.py                 网页版（Streamlit + Plotly），推荐入口
-packer_pro.py          装箱计算内核（标准版 + 增强版），网页版依赖它；也可直接运行命令行版
-.streamlit/config.toml 网页版主题与外观配置
-requirements.txt       运行依赖（Streamlit Cloud 部署用）
-requirements_web.txt   网页版依赖（本地一键脚本用）
-run_web_app.bat        Windows 一键启动网页版
-run_web_app.command    macOS 一键启动网页版
-build_exe.bat          把命令行版打包成独立 exe（Windows，可选）
-sample_data.txt        示例数据（可直接导入体验）
-网页版说明.txt          网页版使用与部署说明
-客户使用说明.txt        交付给最终用户的操作指南
-打包与分发说明.txt      桌面版打包说明
-```
 
-## 🚀 快速开始（网页版）
+所有候选最终都经过同一套硬约束内核：
 
-需要 Python 3.9+。
+1. **边界**：货物六个面均不得超出集装箱内尺寸。
+2. **碰撞**：任意两件货物的三维实体不得相交。
+3. **支撑**：非落地货物至少 60% 的底面积由下方货物直接支撑。
+4. **朝向**：普通货物可尝试六种正交旋转；禁止倒放货物只允许绕竖直轴旋转。
+
+重量与密度属于底层摆放的软偏好，不会作为硬约束牺牲可装件数。
+
+### 客户清单回归
+
+| 数据规模 | 原增强算法 | 当前增强算法 | 体积利用率 | 求解时间* |
+| ---: | ---: | ---: | ---: | ---: |
+| 435 件 / 5 类 | 424 / 435 | **435 / 435** | **90.35%** | **约 1.4 秒** |
+
+<sub>* 开发机回归结果。实际时间受硬件、清单结构和搜索上限影响；找到全装方案后会立即停止。</sub>
+
+## 本地运行
+
+要求 Python 3.9 或更高版本。
 
 ```bash
+git clone https://github.com/hyt0019/loader.git
+cd loader
 pip install -r requirements_web.txt
 streamlit run app.py
 ```
 
-浏览器会自动打开 `http://localhost:8501`。
-Windows 也可直接双击 `run_web_app.bat`，macOS 双击 `run_web_app.command`（首次会自动建环境装依赖）。
+浏览器将打开 `http://localhost:8501`。Windows 可直接运行 `run_web_app.bat`，macOS 可运行 `run_web_app.command`。
 
-## ☁️ 部署到 Streamlit Community Cloud（免费，客户零安装）
+## 使用流程
 
-1. 把本仓库推到 GitHub。
-2. 打开 https://share.streamlit.io ，用 GitHub 登录，选择本仓库，主文件填 `app.py`，Deploy。
-3. 得到一个公开网址，任何人用浏览器即可访问（Windows/Mac/手机皆可）。
-
-## 📐 数据格式
-
-- 第一行：集装箱 长 宽 高（米，空格分隔）
-- 第二行：货物种类数
-- 其后每行：长 宽 高 数量 重量 类型（`0`=木箱，`1`=纸箱，`2`=托盘）
-
-示例：
-
+```mermaid
+flowchart LR
+    A[选择柜型或填写内尺寸] --> B[录入 / 导入货物清单]
+    B --> C[设置倒放与底层偏好]
+    C --> D[标准版或增强版计算]
+    D --> E[三维复核与分段查看]
+    E --> F[导出 XLSX / JSON]
 ```
-2.35 5.8 2.35
+
+### 清单格式
+
+TXT 文件使用以下结构，尺寸单位为米：
+
+```text
+5.8 2.35 2.35
 2
-0.49 0.4 0.09 44 18 1
-1.2 1 1.35 7 1472 0
+0.49 0.40 0.09 44 18 1
+1.20 1.00 1.35 7 1472 0
 ```
 
-网页版可直接用表格录入，无需手写此格式。
+第一行为集装箱长、宽、高；第二行为货物种类数；后续每行依次为长、宽、高、数量、重量、类型。类型 `0 / 1 / 2` 分别表示木箱、纸箱和托盘。网页也支持直接编辑表格或导入网站导出的 XLSX。
 
-## 🖥️ 打包为桌面程序（可选）
+## 系统结构
 
-在 Windows 上双击 `build_exe.bat`（打包 `packer_pro.py` 的命令行版），
-会在干净虚拟环境中生成体积精简的“文件夹版”程序，详见 `打包与分发说明.txt`。
+```text
+app.py                    Streamlit 工作台、Plotly 三维视图、导入导出
+packer_pro.py             整数几何内核、标准与增强求解器
+tests/                    算法与方案导入回归测试
+.streamlit/config.toml    网页主题和部署配置
+sample_data.txt           可直接导入的示例清单
+requirements*.txt         本地与云端运行依赖
+```
 
-> 网页版是推荐的交付方式：客户只需浏览器，无需安装任何环境，也不会接触到源码。
+网页端调用 `packer_pro.py` 中的同一套求解与校验逻辑；桌面命令行也可直接运行该文件。
 
-## 📄 许可证
+## 部署
 
-本项目基于 MIT License 开源，详见 [LICENSE](LICENSE)。
+Streamlit Community Cloud 可直接从 GitHub 部署：选择本仓库和目标分支，入口文件填写 `app.py`。代码推送后，Cloud 会自动同步并重新运行应用。
 
----
+## License
 
-Designed by **HE**
+基于 [MIT License](LICENSE) 发布。
+
+<p align="center">
+  <sub>Designed &amp; engineered by HYT · Container Load Planner</sub>
+</p>

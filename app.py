@@ -382,8 +382,8 @@ def baseline_note(container, boxes, threshold, constrained_placed):
 # --------------------------------------------------------------------------- #
 #                           交互式 3D (Plotly)                                 #
 # --------------------------------------------------------------------------- #
-_TAB10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-          '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+_TAB10 = ['#3151CB', '#B9693F', '#2F7D68', '#A84A5B', '#6B5CA5',
+          '#8A6A4A', '#4F7897', '#69727D', '#8C7836', '#2F7480']
 
 # 立方体的 12 个三角面（顶点索引），顶点顺序见 _cuboid_vertices
 _TRI_I = [0, 0, 0, 0, 4, 4, 0, 0, 1, 1, 2, 2]
@@ -419,7 +419,7 @@ def build_figure(packer, highlight_categories=None, region=None,
         ey += [a[1], b[1], None]
         ez += [a[2], b[2], None]
     fig.add_trace(go.Scatter3d(x=ex, y=ey, z=ez, mode='lines',
-                               line=dict(color='black', width=3), name='集装箱', hoverinfo='skip'))
+                               line=dict(color='#263142', width=3), name='集装箱', hoverinfo='skip'))
 
     # 按类别分组
     cats = {}
@@ -435,7 +435,7 @@ def build_figure(packer, highlight_categories=None, region=None,
     for io in sorted(cats):
         category = io + 1
         selected = category in highlight_categories
-        color = _TAB10[io % len(_TAB10)] if selected else '#d9d9d9'
+        color = _TAB10[io % len(_TAB10)] if selected else '#D8D9D5'
         # 实体不透明：Plotly 的 Mesh3d 在半透明时没有正确深度排序，会糊成一片
         opacity = (0.42 if translucent else 1.0) if selected else 0.08
         vx, vy, vz, ii, jj, kk, htext = [], [], [], [], [], [], []
@@ -487,7 +487,7 @@ def build_figure(packer, highlight_categories=None, region=None,
     if show_edges and edge_x and drawn <= 2500:
         fig.add_trace(go.Scatter3d(
             x=edge_x, y=edge_y, z=edge_z, mode='lines',
-            line=dict(color='rgba(15,23,42,0.55)', width=1),
+            line=dict(color='rgba(20,27,38,0.52)', width=1),
             hoverinfo='skip', showlegend=False))
 
     fig.update_layout(
@@ -495,15 +495,20 @@ def build_figure(packer, highlight_categories=None, region=None,
             xaxis_title='长 Length (m)', yaxis_title='宽 Width (m)', zaxis_title='高 Height (m)',
             aspectmode='data',
             camera=dict(eye=dict(x=1.65, y=-1.55, z=1.0), up=dict(x=0, y=0, z=1)),
-            xaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
-            yaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
-            zaxis=dict(backgroundcolor='rgba(245,248,252,0.9)', gridcolor='#DDE5F0', showbackground=True),
+            xaxis=dict(backgroundcolor='#F7F7F4', gridcolor='#D9DAD5', zerolinecolor='#C8CAC4',
+                       tickfont=dict(color='#626A75'), title=dict(font=dict(color='#343B46')), showbackground=True),
+            yaxis=dict(backgroundcolor='#F7F7F4', gridcolor='#D9DAD5', zerolinecolor='#C8CAC4',
+                       tickfont=dict(color='#626A75'), title=dict(font=dict(color='#343B46')), showbackground=True),
+            zaxis=dict(backgroundcolor='#F7F7F4', gridcolor='#D9DAD5', zerolinecolor='#C8CAC4',
+                       tickfont=dict(color='#626A75'), title=dict(font=dict(color='#343B46')), showbackground=True),
         ),
         # 图例移到图表下方：顶部让给 Plotly 工具条（缩放/复位/相机/全屏），避免重叠
         margin=dict(l=0, r=0, t=8, b=0), height=700,
+        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Inter, Microsoft YaHei, sans-serif', color='#343B46'),
         legend=dict(orientation='h', yanchor='top', y=-0.02, xanchor='left', x=0,
-                    bgcolor='rgba(255,255,255,0.75)', bordercolor='#E7ECF4', borderwidth=1,
-                    font=dict(size=12)),
+                    bgcolor='rgba(252,252,250,.92)', bordercolor='#DCDDD8', borderwidth=1,
+                    font=dict(size=11, color='#4A515C')),
     )
     return fig
 
@@ -795,92 +800,139 @@ def render_live_estimate(container_mm, boxes, threshold):
 # --------------------------------------------------------------------------- #
 THEME_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 html, body, [class*="css"], .stApp, button, input, textarea, select {
-    font-family: 'Inter', 'Microsoft YaHei', -apple-system, sans-serif;
+    font-family: Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
 }
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 header[data-testid="stHeader"] {background: transparent;}
-html {background: #EDF2FA;}
+html {background: #F3F3F0;}
 .stApp {background: transparent;}
-.block-container {position: relative; z-index: 1; padding-top: 1.5rem;
-    padding-bottom: 4.5rem; max-width: 1240px;}
+.block-container {position: relative; z-index: 1; padding-top: 1.25rem;
+    padding-bottom: 4.5rem; max-width: 1280px;}
 
-/* 动态极光背景 */
-.aurora {position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;}
-.aurora .blob {position: absolute; width: 540px; height: 540px; border-radius: 50%;
-    filter: blur(74px); opacity: .26; animation: drift 24s ease-in-out infinite;}
-.aurora .b1 {background: #3B82F6; top: -150px; left: -90px;}
-.aurora .b2 {background: #22D3EE; top: 4%; right: -150px; animation-delay: -8s;}
-.aurora .b3 {background: #8B5CF6; bottom: -170px; left: 24%; animation-delay: -14s;}
-.aurora .b4 {background: #38BDF8; bottom: -90px; right: 16%; animation-delay: -4s;}
-@keyframes drift {0%,100%{transform: translate(0,0) scale(1);}
-    33%{transform: translate(48px,-34px) scale(1.09);}
-    66%{transform: translate(-36px,28px) scale(.95);}}
+/* 安静的工程网格背景 */
+.page-grid {position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-color:#F3F3F0;
+    background-image: linear-gradient(rgba(15,23,42,.028) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(15,23,42,.028) 1px, transparent 1px);
+    background-size: 32px 32px;
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.72), transparent 72%);}
 
-/* Hero 头图 */
+/* Hero：深色编辑式封面，不使用高饱和渐变与发光 */
 .hero {
-    background: linear-gradient(120deg, #1E3A8A 0%, #2563EB 50%, #0EA5E9 100%);
-    background-size: 185% 185%; animation: heroShift 15s ease infinite;
-    border-radius: 22px; padding: 30px 36px; margin-bottom: 22px;
-    box-shadow: 0 18px 42px rgba(37,99,235,.30); position: relative; overflow: hidden;
+    display:grid; grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr); gap:36px;
+    align-items:center; min-height:300px; background:#0C1524;
+    border:1px solid #1E2A3D; border-radius:14px; padding:42px 46px; margin-bottom:24px;
+    box-shadow:0 18px 44px rgba(12,21,36,.14); position:relative; overflow:hidden;
+    animation:heroEnter .55s cubic-bezier(.2,.7,.2,1) both;
 }
-@keyframes heroShift {0%{background-position:0% 50%;}50%{background-position:100% 50%;}
-    100%{background-position:0% 50%;}}
-.hero-title {color:#fff; font-size: 30px; font-weight: 700; margin: 0; letter-spacing:.5px;}
-.hero-sub {color:#DBEAFE; font-size: 14.5px; margin: 8px 0 0 0;}
-.hero-badges {margin-top: 14px;}
-.hero-badge {display:inline-block; background: rgba(255,255,255,.16); color:#EAF2FF;
-    border:1px solid rgba(255,255,255,.28); border-radius: 999px;
-    padding: 4px 13px; font-size: 12.5px; margin-right: 8px;}
+.hero::after {content:""; position:absolute; inset:0; pointer-events:none; opacity:.42;
+    background-image:linear-gradient(rgba(148,163,184,.08) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(148,163,184,.08) 1px,transparent 1px);
+    background-size:28px 28px; mask-image:linear-gradient(90deg,transparent 35%,#000);}
+.hero-copy,.hero-visual {position:relative; z-index:1;}
+.hero-kicker {display:flex; align-items:center; gap:10px; color:#91A4BE; font-size:11px;
+    font-weight:650; letter-spacing:2.2px; text-transform:uppercase; margin-bottom:22px;}
+.hero-kicker::before {content:""; width:22px; height:1px; background:#4B72F2;
+    transform-origin:left; animation:kickerLine 3.8s ease-in-out infinite;}
+.hero-title {color:#F8FAFC; font-size:clamp(32px,4vw,48px); line-height:1.12;
+    font-weight:620; margin:0; letter-spacing:-1.6px;}
+.hero-title span {color:#87A2FF;}
+.hero-sub {color:#AAB7C9; font-size:14px; line-height:1.8; max-width:580px; margin:18px 0 0;}
+.hero-meta {display:flex; gap:0; margin-top:28px; border-top:1px solid #27354A; padding-top:18px;}
+.hero-meta-item {padding:0 22px; border-right:1px solid #27354A; color:#7E8DA2;
+    font-size:10px; letter-spacing:1.35px; line-height:1.35;}
+.hero-meta-item:first-child {padding-left:0;}
+.hero-meta-item:last-child {border-right:0;}
+.hero-meta-item strong {display:block; color:#E7ECF4; font-size:17px; font-weight:580;
+    letter-spacing:-.2px; margin-bottom:3px; font-variant-numeric:tabular-nums;}
+.hero-visual {min-height:218px; display:flex; align-items:center; justify-content:center;}
+.hero-visual svg {width:100%; max-width:420px; height:auto;
+    animation:blueprintFloat 7s ease-in-out infinite;}
+.hero-stat {position:absolute; right:2px; bottom:4px; min-width:124px; padding:13px 15px;
+    background:rgba(16,27,45,.92); border:1px solid #334158; border-radius:9px;
+    color:#8291A6; font-size:10px; letter-spacing:1px; backdrop-filter:blur(8px);}
+.hero-stat strong {display:block; color:#F8FAFC; font-size:23px; font-weight:570;
+    letter-spacing:-.6px; margin-bottom:2px; font-variant-numeric:tabular-nums;}
+@keyframes heroEnter {from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes kickerLine {0%,100%{transform:scaleX(.55);opacity:.55}50%{transform:scaleX(1);opacity:1}}
+@keyframes blueprintFloat {0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
 
 /* 卡片容器 */
 div[data-testid="stVerticalBlockBorderWrapper"] {
-    background:#fff; border:1px solid #E7ECF4 !important; border-radius: 18px;
-    box-shadow: 0 8px 26px rgba(15,23,42,.06); margin-bottom: 18px;
-    transition: box-shadow .25s ease, border-color .25s ease;
-    animation: fadeUp .5s ease both;
+    background:#FCFCFA; border:1px solid #DCDDD8 !important; border-radius:12px;
+    box-shadow:0 1px 2px rgba(15,23,42,.025); margin-bottom:16px;
+    animation:cardEnter .38s ease-out both;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]:hover {
-    box-shadow: 0 14px 38px rgba(15,23,42,.10); border-color: #D7E1F1 !important;}
-div[data-testid="stVerticalBlockBorderWrapper"] > div {padding: 10px 20px 14px 20px;}
-@keyframes fadeUp {from{opacity:0; transform: translateY(12px);} to{opacity:1; transform:none;}}
+div[data-testid="stVerticalBlockBorderWrapper"] > div {padding:12px 20px 16px;}
+@keyframes cardEnter {from{opacity:.35;transform:translateY(5px)}to{opacity:1;transform:none}}
 
 /* 指标卡 */
 div[data-testid="stMetric"] {
-    background: #FFFFFF; border: 1px solid #EDF1F7; border-radius: 14px;
-    padding: 14px 16px; box-shadow: 0 3px 12px rgba(15,23,42,.045);
+    background:#F7F7F4; border:1px solid #E2E3DE; border-radius:9px;
+    padding:16px 17px; box-shadow:none;
 }
-div[data-testid="stMetricValue"] {color:#1E3A8A; font-weight: 700;}
-div[data-testid="stMetricLabel"] {color:#64748B; font-weight: 600;}
+div[data-testid="stMetricValue"] {color:#111827; font-weight:570; letter-spacing:-.7px;
+    font-variant-numeric:tabular-nums;}
+div[data-testid="stMetricLabel"] {color:#737A86; font-size:12px; font-weight:520;
+    letter-spacing:.2px;}
 
 /* 按钮 */
 .stButton>button {
-    border-radius: 11px; font-weight: 600; border: 1px solid #E2E8F0; padding: 8px 16px;
-    transition: all .15s ease;
+    min-height:40px; border-radius:8px; font-weight:570; border:1px solid #D7D9D5;
+    background:#FCFCFA; color:#242B36; padding:8px 16px; transition:background .15s ease,
+    border-color .15s ease,color .15s ease;
 }
-.stButton>button:hover {border-color:#2563EB; color:#2563EB; transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(37,99,235,.12);}
+.stButton>button:hover {border-color:#AAB1BC; color:#111827; background:#F3F4F1;}
 .stButton>button[kind="primary"] {
-    background: linear-gradient(90deg,#2563EB 0%, #1D4ED8 100%); border: none; color:#fff;
-    box-shadow: 0 8px 20px rgba(37,99,235,.35);
+    background:#2347D9; border-color:#2347D9; color:#fff; box-shadow:none;
+    position:relative; overflow:hidden;
 }
-.stButton>button[kind="primary"]:hover {color:#fff; transform: translateY(-1px);
-    box-shadow: 0 10px 24px rgba(37,99,235,.45);}
+.stButton>button[kind="primary"]:hover {background:#1939BD; border-color:#1939BD; color:#fff;}
+.stButton>button[kind="primary"]::after {content:""; position:absolute; inset:-2px auto -2px -34%;
+    width:22%; transform:skewX(-20deg); background:rgba(255,255,255,.16); opacity:0;}
+.stButton>button[kind="primary"]:hover::after {opacity:1; left:112%; transition:left .55s ease,opacity .2s;}
 
 /* 章节标题 */
-h3, h4 {color:#0F172A; font-weight: 700;}
-.sec-title {display:flex; align-items:center; gap:11px; font-size:18px; font-weight:700;
-    color:#0F172A; margin: 2px 0 12px 0;}
-.sec-ic {display:inline-flex; width:32px; height:32px; border-radius:10px;
-    align-items:center; justify-content:center; color:#fff;
-    background: linear-gradient(135deg,#2563EB,#0EA5E9); box-shadow:0 6px 14px rgba(37,99,235,.30);}
-.sec-ic svg {width:18px; height:18px;}
-.grid-head {font-size:12.5px; font-weight:700; color:#64748B; padding:2px 4px 6px 4px;}
+h3,h4 {color:#141B26; font-weight:620; letter-spacing:-.25px;}
+.sec-title {display:flex; align-items:center; gap:10px; font-size:17px; font-weight:620;
+    color:#151C27; margin:2px 0 14px; letter-spacing:-.2px;}
+.sec-ic {display:inline-flex; width:29px; height:29px; border-radius:7px;
+    align-items:center; justify-content:center; color:#3151CB; background:#EEF1FC;
+    border:1px solid #DCE3FA; box-shadow:none;}
+.sec-ic svg {width:16px; height:16px;}
+.grid-head {font-size:11px; font-weight:650; color:#7A818C; padding:2px 4px 7px;
+    letter-spacing:.65px; text-transform:uppercase;}
 
 /* 侧边栏 */
-section[data-testid="stSidebar"] {background:#FFFFFF; border-right:1px solid #E7ECF4;}
+section[data-testid="stSidebar"] {background:#F8F8F5; border-right:1px solid #DCDDD8;}
+section[data-testid="stSidebar"] > div {padding-top:1.15rem;}
+section[data-testid="stSidebar"] hr {border-color:#E1E2DD;}
+
+/* 表单与数据控件 */
+div[data-baseweb="input"] > div, div[data-baseweb="select"] > div,
+div[data-baseweb="textarea"] > div {background:#FCFCFA !important; border-color:#D7D9D5 !important;
+    border-radius:8px !important; box-shadow:none !important;}
+div[data-baseweb="input"] > div:focus-within, div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="textarea"] > div:focus-within {border-color:#5571DF !important;
+    box-shadow:0 0 0 2px rgba(35,71,217,.08) !important;}
+div[data-testid="stFileUploaderDropzone"] {background:#F7F7F4; border:1px dashed #C8CBC5;
+    border-radius:9px;}
+div[data-testid="stDataFrame"] {border:1px solid #DCDDD8; border-radius:9px; overflow:hidden;}
+details[data-testid="stExpander"] {background:#FCFCFA; border:1px solid #DCDDD8 !important;
+    border-radius:9px !important;}
+div[data-testid="stProgress"] > div > div > div {background:#3151CB;}
+div[role="radiogroup"] label, label[data-baseweb="checkbox"] {color:#343B46;}
+
+/* 提示条 */
+div[data-testid="stAlert"] {border-radius:8px; border-width:1px; box-shadow:none;}
+
+/* 下载按钮与链接按钮保持克制 */
+.stDownloadButton>button {border-radius:8px; min-height:40px; border:1px solid #D7D9D5;
+    background:#FCFCFA; color:#242B36; font-weight:570;}
+.stDownloadButton>button:hover {border-color:#3151CB; color:#2347D9; background:#F6F7FC;}
 
 /* 主按钮的矢量图标（闪电=开始计算），替代 emoji */
 .stButton>button[kind="primary"]::before {
@@ -889,13 +941,11 @@ section[data-testid="stSidebar"] {background:#FFFFFF; border-right:1px solid #E7
     background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13 2 4 14h7l-1 8 9-12h-7z'/%3E%3C/svg%3E") no-repeat center/contain;
 }
 
-/* 计算中的动画：堆叠方块 + 流光文字 */
+/* 计算中的动画：节制的装载节拍 */
 .calc-loader {display: flex; flex-direction: column; align-items: center; gap: 16px;
     padding: 34px 0 28px 0;}
 .cubes {display: flex; gap: 11px; align-items: flex-end; height: 46px;}
-.cube {width: 20px; border-radius: 5px;
-    background: linear-gradient(160deg, #60A5FA, #2563EB);
-    box-shadow: 0 6px 14px rgba(37,99,235,.32);
+.cube {width: 20px; border-radius: 3px; background:#3151CB; box-shadow:none;
     animation: stack 1.15s ease-in-out infinite;}
 .cube:nth-child(1) {height: 20px; animation-delay: 0s;}
 .cube:nth-child(2) {height: 30px; animation-delay: .13s;}
@@ -906,42 +956,52 @@ section[data-testid="stSidebar"] {background:#FFFFFF; border-right:1px solid #E7
     0%, 100% {transform: translateY(0) scaleY(1); opacity: .55;}
     50% {transform: translateY(-13px) scaleY(1.12); opacity: 1;}
 }
-.calc-text {font-weight: 600; font-size: 15px; letter-spacing: .5px;
-    background: linear-gradient(90deg, #1E3A8A, #38BDF8, #1E3A8A);
-    background-size: 220% auto; -webkit-background-clip: text; background-clip: text;
-    color: transparent; animation: shine 2.2s linear infinite;}
-@keyframes shine {to {background-position: 220% center;}}
-.calc-sub {font-size: 12px; color: #8091A7;}
+.calc-text {font-weight:600; font-size:15px; letter-spacing:.25px; color:#202733;}
+.calc-sub {font-size:12px; color:#7A818C;}
 
-/* 页脚签名（随内容排布，永不被遮挡） */
-.site-footer {margin: 36px 0 4px 0;}
-.footer-line {height: 1px; margin-bottom: 18px;
-    background: linear-gradient(90deg, rgba(37,99,235,0), rgba(37,99,235,.35), rgba(37,99,235,0));}
-.footer-inner {display: flex; align-items: center; justify-content: center; gap: 14px;}
+/* 页脚 */
+.site-footer {margin:42px 0 4px; border-top:1px solid #DCDDD8; padding-top:20px;}
+.footer-inner {display:flex; align-items:center; justify-content:space-between; gap:14px;}
 .footer-txt {line-height: 1.4;}
-.footer-name {font-weight: 700; font-size: 14px; color: #0F172A; letter-spacing: .3px;}
-.footer-sub {font-size: 11.5px; color: #8091A7; letter-spacing: .5px;}
-.sig-mark {font-weight: 700; font-size: 17px; letter-spacing: 1px; color: #fff;
-    width: 46px; height: 46px; border-radius: 14px;
-    display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 55%, #0EA5E9 100%);
-    box-shadow: 0 10px 24px rgba(37,99,235,.34), inset 0 1px 0 rgba(255,255,255,.35);
-    border: 1px solid rgba(255,255,255,.30);
-    transition: transform .25s ease, box-shadow .25s ease;}
-.sig-mark:hover {transform: translateY(-2px) rotate(-3deg);
-    box-shadow: 0 14px 30px rgba(37,99,235,.45), inset 0 1px 0 rgba(255,255,255,.4);}
+.footer-name {font-weight:620; font-size:13px; color:#202733; letter-spacing:.1px;}
+.footer-sub {font-size:10px; color:#888E97; letter-spacing:1.05px; text-transform:uppercase;}
+.sig-mark {font-weight:650; font-size:12px; letter-spacing:1.6px; color:#263248;
+    width:42px; height:42px; border-radius:8px; display:flex; align-items:center;
+    justify-content:center; background:#E9EBE7; border:1px solid #D5D7D2; box-shadow:none;}
+.footer-version {font-size:10px; color:#9A9FA7; letter-spacing:1px; text-transform:uppercase;}
+
+@media (max-width: 860px) {
+    .block-container {padding-top:.75rem;}
+    .hero {grid-template-columns:1fr; padding:32px 28px; gap:20px;}
+    .hero-visual {min-height:170px;}
+    .hero-meta-item {padding:0 13px;}
+}
+@media (max-width: 560px) {
+    .hero {padding:27px 21px; border-radius:11px;}
+    .hero-title {font-size:32px; letter-spacing:-1px;}
+    .hero-meta {flex-wrap:wrap; row-gap:14px;}
+    .hero-meta-item {min-width:50%; border-right:0; padding:0;}
+    .footer-inner {align-items:flex-start;}
+}
+@media (prefers-reduced-motion: reduce) {
+    .hero,.hero-kicker::before,.hero-visual svg,
+    div[data-testid="stVerticalBlockBorderWrapper"],.cube {animation:none !important;}
+    .stButton>button[kind="primary"]::after {display:none;}
+}
 </style>
 """
 
 FOOTER_HTML = """
 <div class="site-footer">
-  <div class="footer-line"></div>
   <div class="footer-inner">
-    <span class="sig-mark">HYT</span>
-    <div class="footer-txt">
-      <div class="footer-name">Designed &amp; Built by HYT</div>
-      <div class="footer-sub">智能集装箱装箱系统 · CONTAINER LOADING OPTIMIZER</div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span class="sig-mark">HYT</span>
+      <div class="footer-txt">
+        <div class="footer-name">Container Load Planner</div>
+        <div class="footer-sub">Designed &amp; engineered by HYT</div>
+      </div>
     </div>
+    <div class="footer-version">Integer geometry · 60% support</div>
   </div>
 </div>
 """
@@ -959,20 +1019,37 @@ LOADING_HTML = """
 
 HERO_HTML = """
 <div class="hero">
-  <p class="hero-title"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round" style="width:26px;height:26px;vertical-align:-5px;margin-right:9px;"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5"/><path d="M12 12v10"/></svg>智能集装箱装箱系统</p>
-  <p class="hero-sub">精确装箱 · 混合启发式逼近最优 · 交互式 3D 可视化 · 一键导出方案</p>
-  <div class="hero-badges">
-    <span class="hero-badge">标准版 / 增强版双模式</span>
-    <span class="hero-badge">实时体积 · 超重预警</span>
-    <span class="hero-badge">分段查看装载过程</span>
-    <span class="hero-badge">Excel / JSON 导出</span>
+  <div class="hero-copy">
+    <div class="hero-kicker">HYT · LOAD PLANNING SYSTEM</div>
+    <h1 class="hero-title">让每一立方米，<br><span>都有明确去处。</span></h1>
+    <p class="hero-sub">面向真实装柜约束的三维装箱系统。以整数几何内核校验边界、碰撞与支撑，
+    结合混合启发式搜索生成可执行、可复核、可导出的装载方案。</p>
+    <div class="hero-meta">
+      <div class="hero-meta-item"><strong>6-way</strong>合法旋转</div>
+      <div class="hero-meta-item"><strong>≥ 60%</strong>底面支撑</div>
+      <div class="hero-meta-item"><strong>JSON / XLSX</strong>方案流转</div>
+    </div>
+  </div>
+  <div class="hero-visual">
+    <svg viewBox="0 0 500 300" fill="none" aria-hidden="true">
+      <path d="M56 82 276 28l164 74-222 58L56 82Z" stroke="#5F7190" stroke-width="1.2"/>
+      <path d="M56 82v126l162 70V160M218 160v118l222-62V102" stroke="#5F7190" stroke-width="1.2"/>
+      <path d="m79 112 126 54v82L79 194v-82Z" fill="#1B2A42" stroke="#4567D8"/>
+      <path d="m216 168 76-20v83l-76 20v-83Z" fill="#2347D9" fill-opacity=".7" stroke="#6E87E8"/>
+      <path d="m298 146 70-18v82l-70 19v-83Z" fill="#18263C" stroke="#63738C"/>
+      <path d="m373 126 47-12v82l-47 13v-83Z" fill="#21304A" stroke="#63738C"/>
+      <path d="m80 107 126-31 86 36-128 33-84-38Z" fill="#22314B" stroke="#63738C"/>
+      <path d="m211 75 67-16 87 37-68 17-86-38Z" fill="#3151CB" fill-opacity=".65" stroke="#7890E7"/>
+      <path d="m283 58 55-13 87 37-56 14-86-38Z" fill="#1A2940" stroke="#63738C"/>
+      <path d="M56 228h384" stroke="#324158" stroke-dasharray="4 5"/>
+      <path d="M56 238h384" stroke="#253348" stroke-dasharray="2 7"/>
+    </svg>
+    <div class="hero-stat"><strong>90.35%</strong>VERIFIED UTILIZATION</div>
   </div>
 </div>
 """
 
-
-AURORA_HTML = ('<div class="aurora"><div class="blob b1"></div><div class="blob b2"></div>'
-               '<div class="blob b3"></div><div class="blob b4"></div></div>')
+BACKDROP_HTML = '<div class="page-grid"></div>'
 
 # 章节图标（内联 SVG，精致线性图标，替代简陋 emoji）
 IC_BOX = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
@@ -991,7 +1068,7 @@ IC_CUBE = IC_BOX
 
 def inject_theme():
     st.markdown(THEME_CSS, unsafe_allow_html=True)
-    st.markdown(AURORA_HTML, unsafe_allow_html=True)  # 动态极光背景
+    st.markdown(BACKDROP_HTML, unsafe_allow_html=True)
 
 
 def render_footer():
@@ -1153,7 +1230,11 @@ def _excl_vol():
 
 
 def main():
-    st.set_page_config(page_title='智能装箱系统', page_icon='📦', layout='wide')
+    st.set_page_config(
+        page_title='HYT · 智能装箱系统',
+        page_icon='docs/assets/brand-mark.svg',
+        layout='wide',
+    )
     inject_theme()
     render_hero()
     render_guide()
