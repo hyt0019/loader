@@ -812,13 +812,42 @@ html {background: #F3F3F0;}
 .block-container {position: relative; z-index: 1; padding-top: 1.25rem;
     padding-bottom: 4.5rem; max-width: 1280px;}
 
-/* 安静的工程网格背景 */
-.page-grid {position: fixed; inset: 0; z-index: 0; pointer-events: none;
-    background-color:#F3F3F0;
-    background-image: linear-gradient(rgba(15,23,42,.028) 1px, transparent 1px),
-                      linear-gradient(90deg, rgba(15,23,42,.028) 1px, transparent 1px);
-    background-size: 32px 32px;
-    mask-image: linear-gradient(to bottom, rgba(0,0,0,.72), transparent 72%);}
+/* 工程网格 + 低频环境光场：为长页面提供呼吸感，不干扰内容阅读 */
+.page-grid {position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden;
+    background:#F3F3F0; isolation:isolate;}
+.page-grid::before {content:""; position:absolute; inset:0; opacity:.9;
+    background-image:linear-gradient(rgba(15,23,42,.028) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(15,23,42,.028) 1px,transparent 1px);
+    background-size:32px 32px;
+    mask-image:linear-gradient(to bottom,rgba(0,0,0,.86),rgba(0,0,0,.24) 72%,transparent);}
+.ambient-halo {position:absolute; border-radius:50%; opacity:.56; will-change:transform,opacity;
+    mix-blend-mode:multiply;}
+.halo-a {width:680px; height:680px; right:-240px; top:-220px;
+    background:radial-gradient(circle,rgba(82,112,232,.24),rgba(82,112,232,.06) 44%,transparent 70%);
+    animation:ambientA 20s ease-in-out infinite;}
+.halo-b {width:760px; height:760px; left:-330px; top:38%;
+    background:radial-gradient(circle,rgba(89,180,193,.15),rgba(89,180,193,.04) 46%,transparent 70%);
+    animation:ambientB 26s ease-in-out infinite;}
+.halo-c {width:600px; height:600px; right:8%; bottom:-310px;
+    background:radial-gradient(circle,rgba(122,96,188,.14),rgba(122,96,188,.035) 48%,transparent 72%);
+    animation:ambientC 23s ease-in-out infinite;}
+.route-field {position:absolute; inset:-3% -8%; width:116%; height:106%; opacity:.4;}
+.route-field .route {fill:none; stroke:#6079D5; stroke-width:1; stroke-opacity:.18;
+    stroke-dasharray:7 16; animation:routeFlow 28s linear infinite;}
+.route-field .route-b {stroke:#518E9C; stroke-opacity:.14; stroke-dasharray:3 20;
+    animation-duration:36s; animation-direction:reverse;}
+.route-field .node {fill:#4968DC; opacity:.2; transform-box:fill-box; transform-origin:center;
+    animation:nodeBreathe 6s ease-in-out infinite;}
+.route-field .node:nth-of-type(2) {animation-delay:-2s;}
+.route-field .node:nth-of-type(3) {animation-delay:-4s;}
+@keyframes ambientA {0%,100%{transform:translate3d(0,0,0) scale(1);opacity:.46}
+    50%{transform:translate3d(-54px,42px,0) scale(1.08);opacity:.68}}
+@keyframes ambientB {0%,100%{transform:translate3d(0,0,0) scale(1)}
+    50%{transform:translate3d(72px,-48px,0) scale(.92)}}
+@keyframes ambientC {0%,100%{transform:translate3d(0,0,0) scale(.95)}
+    50%{transform:translate3d(-42px,-36px,0) scale(1.08)}}
+@keyframes routeFlow {to{stroke-dashoffset:-230px}}
+@keyframes nodeBreathe {0%,100%{opacity:.12;transform:scale(.65)}50%{opacity:.42;transform:scale(1.2)}}
 
 /* Hero：深色编辑式封面，不使用高饱和渐变与发光 */
 .hero {
@@ -832,40 +861,53 @@ html {background: #F3F3F0;}
     background-image:linear-gradient(rgba(148,163,184,.08) 1px,transparent 1px),
                      linear-gradient(90deg,rgba(148,163,184,.08) 1px,transparent 1px);
     background-size:28px 28px; mask-image:linear-gradient(90deg,transparent 35%,#000);}
+.hero::before {content:""; position:absolute; z-index:1; top:0; bottom:0; width:34%;
+    left:48%; opacity:.17; transform:skewX(-12deg) translateX(-180%);
+    background:linear-gradient(90deg,transparent,rgba(104,135,238,.22),transparent);
+    animation:heroScan 10s ease-in-out infinite; pointer-events:none;}
 .hero-copy,.hero-visual {position:relative; z-index:1;}
 .hero-kicker {display:flex; align-items:center; gap:10px; color:#91A4BE; font-size:11px;
     font-weight:650; letter-spacing:2.2px; text-transform:uppercase; margin-bottom:22px;}
 .hero-kicker::before {content:""; width:22px; height:1px; background:#4B72F2;
     transform-origin:left; animation:kickerLine 3.8s ease-in-out infinite;}
-.hero-title {color:#F8FAFC; font-size:clamp(32px,4vw,48px); line-height:1.12;
+.hero-title {color:#F8FAFC; font-size:clamp(32px,4vw,48px) !important; line-height:1.12;
     font-weight:620; margin:0; letter-spacing:-1.6px;}
 .hero-title span {color:#87A2FF;}
 .hero-sub {color:#AAB7C9; font-size:14px; line-height:1.8; max-width:580px; margin:18px 0 0;}
 .hero-meta {display:flex; gap:0; margin-top:28px; border-top:1px solid #27354A; padding-top:18px;}
 .hero-meta-item {padding:0 22px; border-right:1px solid #27354A; color:#7E8DA2;
-    font-size:10px; letter-spacing:1.35px; line-height:1.35;}
+    font-size:10px; letter-spacing:1.05px; line-height:1.35;}
 .hero-meta-item:first-child {padding-left:0;}
 .hero-meta-item:last-child {border-right:0;}
-.hero-meta-item strong {display:block; color:#E7ECF4; font-size:17px; font-weight:580;
-    letter-spacing:-.2px; margin-bottom:3px; font-variant-numeric:tabular-nums;}
+.hero-meta-item strong {display:block; color:#E7ECF4; font-size:15px; font-weight:580;
+    letter-spacing:.05px; margin-bottom:4px;}
 .hero-visual {min-height:218px; display:flex; align-items:center; justify-content:center;}
 .hero-visual svg {width:100%; max-width:420px; height:auto;
     animation:blueprintFloat 7s ease-in-out infinite;}
-.hero-stat {position:absolute; right:2px; bottom:4px; min-width:124px; padding:13px 15px;
-    background:rgba(16,27,45,.92); border:1px solid #334158; border-radius:9px;
-    color:#8291A6; font-size:10px; letter-spacing:1px; backdrop-filter:blur(8px);}
-.hero-stat strong {display:block; color:#F8FAFC; font-size:23px; font-weight:570;
-    letter-spacing:-.6px; margin-bottom:2px; font-variant-numeric:tabular-nums;}
+.hero-flow {position:absolute; left:7%; right:3%; bottom:0; display:flex; align-items:center;
+    justify-content:center; color:#8595AB; font-size:9px; font-weight:620;
+    letter-spacing:1.15px; text-transform:uppercase; white-space:nowrap;}
+.hero-flow i {height:1px; flex:1; max-width:48px; margin:0 9px; position:relative;
+    background:linear-gradient(90deg,#34465F,#5F7CE0);}
+.hero-flow i::after {content:""; position:absolute; width:4px; height:4px; right:0; top:-1.5px;
+    border-radius:50%; background:#7892EB; box-shadow:0 0 9px rgba(120,146,235,.65);
+    animation:flowNode 3.6s ease-in-out infinite;}
 @keyframes heroEnter {from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes kickerLine {0%,100%{transform:scaleX(.55);opacity:.55}50%{transform:scaleX(1);opacity:1}}
 @keyframes blueprintFloat {0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes heroScan {0%,18%{transform:skewX(-12deg) translateX(-180%)}
+    62%,100%{transform:skewX(-12deg) translateX(245%)}}
+@keyframes flowNode {0%,100%{opacity:.35;transform:scale(.7)}50%{opacity:1;transform:scale(1.25)}}
 
 /* 卡片容器 */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background:#FCFCFA; border:1px solid #DCDDD8 !important; border-radius:12px;
     box-shadow:0 1px 2px rgba(15,23,42,.025); margin-bottom:16px;
-    animation:cardEnter .38s ease-out both;
+    animation:cardEnter .38s ease-out both; transition:transform .25s ease,border-color .25s ease,
+    box-shadow .25s ease;
 }
+div[data-testid="stVerticalBlockBorderWrapper"]:hover {transform:translateY(-1px);
+    border-color:#C9D0E4 !important; box-shadow:0 14px 36px rgba(30,43,68,.065);}
 div[data-testid="stVerticalBlockBorderWrapper"] > div {padding:12px 20px 16px;}
 @keyframes cardEnter {from{opacity:.35;transform:translateY(5px)}to{opacity:1;transform:none}}
 
@@ -925,6 +967,8 @@ details[data-testid="stExpander"] {background:#FCFCFA; border:1px solid #DCDDD8 
     border-radius:9px !important;}
 div[data-testid="stProgress"] > div > div > div {background:#3151CB;}
 div[role="radiogroup"] label, label[data-baseweb="checkbox"] {color:#343B46;}
+label[data-testid="stRadioOption"][data-selected="true"] > div > div > div:first-child {
+    background:#3151CB !important;}
 
 /* 提示条 */
 div[data-testid="stAlert"] {border-radius:8px; border-width:1px; box-shadow:none;}
@@ -978,13 +1022,20 @@ div[data-testid="stAlert"] {border-radius:8px; border-width:1px; box-shadow:none
 }
 @media (max-width: 560px) {
     .hero {padding:27px 21px; border-radius:11px;}
-    .hero-title {font-size:32px; letter-spacing:-1px;}
-    .hero-meta {flex-wrap:wrap; row-gap:14px;}
-    .hero-meta-item {min-width:50%; border-right:0; padding:0;}
+    .hero-title {font-size:32px !important; letter-spacing:-1px;}
+    .hero-meta {gap:0;}
+    .hero-meta-item {width:33.333%; border-right:1px solid #27354A; padding:0 8px;}
+    .hero-meta-item:first-child {padding-left:0;}
+    .hero-meta-item:last-child {border-right:0;}
+    .hero-meta-item strong {font-size:13px;}
+    .hero-meta-item {font-size:8px; letter-spacing:.5px;}
+    .hero-flow {font-size:8px; letter-spacing:.7px;}
+    .hero-flow i {margin:0 5px;}
     .footer-inner {align-items:flex-start;}
 }
 @media (prefers-reduced-motion: reduce) {
-    .hero,.hero-kicker::before,.hero-visual svg,
+    .ambient-halo,.route-field .route,.route-field .node,.hero,.hero::before,
+    .hero-kicker::before,.hero-visual svg,.hero-flow i::after,
     div[data-testid="stVerticalBlockBorderWrapper"],.cube {animation:none !important;}
     .stButton>button[kind="primary"]::after {display:none;}
 }
@@ -1001,7 +1052,7 @@ FOOTER_HTML = """
         <div class="footer-sub">Designed &amp; engineered by HYT</div>
       </div>
     </div>
-    <div class="footer-version">Integer geometry · 60% support</div>
+    <div class="footer-version">Constraint-aware · Geometry verified</div>
   </div>
 </div>
 """
@@ -1025,9 +1076,9 @@ HERO_HTML = """
     <p class="hero-sub">面向真实装柜约束的三维装箱系统。以整数几何内核校验边界、碰撞与支撑，
     结合混合启发式搜索生成可执行、可复核、可导出的装载方案。</p>
     <div class="hero-meta">
-      <div class="hero-meta-item"><strong>6-way</strong>合法旋转</div>
-      <div class="hero-meta-item"><strong>≥ 60%</strong>底面支撑</div>
-      <div class="hero-meta-item"><strong>JSON / XLSX</strong>方案流转</div>
+      <div class="hero-meta-item"><strong>智能排样</strong>多策略探索</div>
+      <div class="hero-meta-item"><strong>三维复核</strong>空间关系可视</div>
+      <div class="hero-meta-item"><strong>方案交付</strong>导入导出衔接</div>
     </div>
   </div>
   <div class="hero-visual">
@@ -1044,12 +1095,25 @@ HERO_HTML = """
       <path d="M56 228h384" stroke="#324158" stroke-dasharray="4 5"/>
       <path d="M56 238h384" stroke="#253348" stroke-dasharray="2 7"/>
     </svg>
-    <div class="hero-stat"><strong>90.35%</strong>VERIFIED UTILIZATION</div>
+    <div class="hero-flow"><span>cargo list</span><i></i><span>smart planning</span><i></i><span>loading plan</span></div>
   </div>
 </div>
 """
 
-BACKDROP_HTML = '<div class="page-grid"></div>'
+BACKDROP_HTML = """
+<div class="page-grid" aria-hidden="true">
+  <div class="ambient-halo halo-a"></div>
+  <div class="ambient-halo halo-b"></div>
+  <div class="ambient-halo halo-c"></div>
+  <svg class="route-field" viewBox="0 0 1600 1200" preserveAspectRatio="none">
+    <path class="route" d="M-80 210C270 70 430 360 760 224S1260 88 1680 242"/>
+    <path class="route route-b" d="M-120 880C260 680 510 980 860 790s540-92 860 12"/>
+    <circle class="node" cx="410" cy="268" r="4"/>
+    <circle class="node" cx="1010" cy="170" r="4"/>
+    <circle class="node" cx="1180" cy="710" r="4"/>
+  </svg>
+</div>
+"""
 
 # 章节图标（内联 SVG，精致线性图标，替代简陋 emoji）
 IC_BOX = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '

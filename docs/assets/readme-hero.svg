@@ -19,14 +19,14 @@
     <text x="2" y="268" fill="#AAB7C9" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="27">让每一立方米，都有明确去处。</text>
     <text x="2" y="318" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="19">整数几何内核 · 混合启发式搜索 · 可执行装载方案</text>
     <g transform="translate(0 370)">
-      <text x="0" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="560">6-way</text>
-      <text x="0" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">合法旋转</text>
-      <path d="M130 -13V35" stroke="#2A384F"/>
-      <text x="166" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="560">≥ 60%</text>
-      <text x="166" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">底面支撑</text>
-      <path d="M316 -13V35" stroke="#2A384F"/>
-      <text x="352" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="560">JSON / XLSX</text>
-      <text x="352" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">方案流转</text>
+      <text x="0" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="21" font-weight="560" letter-spacing="1">SMART PLANNING</text>
+      <text x="0" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">智能排样</text>
+      <path d="M204 -13V35" stroke="#2A384F"/>
+      <text x="240" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="21" font-weight="560" letter-spacing="1">3D REVIEW</text>
+      <text x="240" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">三维复核</text>
+      <path d="M390 -13V35" stroke="#2A384F"/>
+      <text x="426" y="0" fill="#F4F7FB" font-family="Inter, Arial, sans-serif" font-size="21" font-weight="560" letter-spacing="1">PLAN DELIVERY</text>
+      <text x="426" y="27" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="14" letter-spacing="1.5">方案交付</text>
     </g>
   </g>
   <g transform="translate(980 72)" filter="url(#shadow)">
@@ -42,11 +42,12 @@
     <path d="M0 380H485" stroke="#34445D" stroke-dasharray="6 8"/>
     <path d="M0 399H485" stroke="#26354C" stroke-dasharray="3 11"/>
   </g>
-  <g transform="translate(1250 461)">
-    <rect width="258" height="105" rx="12" fill="#101C2E" stroke="#34445D"/>
-    <text x="20" y="31" fill="#718097" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="600" letter-spacing="2">VERIFIED UTILIZATION</text>
-    <text x="20" y="76" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="560" letter-spacing="-1">90.35%</text>
+  <g transform="translate(1210 412)">
+    <rect width="298" height="110" rx="12" fill="#101C2E" stroke="#34445D"/>
+    <text x="20" y="31" fill="#718097" font-family="Inter, Arial, sans-serif" font-size="11" font-weight="600" letter-spacing="2">CONNECTED WORKFLOW</text>
+    <text x="20" y="68" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="560" letter-spacing=".5">PLAN · VERIFY · DELIVER</text>
+    <text x="20" y="92" fill="#718097" font-family="PingFang SC, Microsoft YaHei, Arial, sans-serif" font-size="13" letter-spacing="1.5">从清单到装载方案</text>
   </g>
   <text x="90" y="574" fill="#526078" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="600" letter-spacing="2.5">ENGINEERED FOR REAL-WORLD CONSTRAINTS</text>
-  <text x="1510" y="574" fill="#526078" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="end" letter-spacing="2.5">2026 · HYT</text>
+  <text x="1510" y="574" fill="#526078" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="600" text-anchor="end" letter-spacing="2.5">HYT · PRODUCT SYSTEM</text>
 </svg>
