@@ -815,12 +815,21 @@ html {background: #F3F3F0;}
 /* 工程网格 + 低频环境光场：为长页面提供呼吸感，不干扰内容阅读 */
 .page-grid {position:fixed; inset:0; z-index:0; pointer-events:none; overflow:hidden;
     background:#F3F3F0; isolation:isolate;}
-.page-grid::before {content:""; position:absolute; inset:0; opacity:.9;
+.page-grid::before {content:""; position:absolute; inset:0; z-index:3; opacity:.82;
     background-image:linear-gradient(rgba(15,23,42,.028) 1px,transparent 1px),
                      linear-gradient(90deg,rgba(15,23,42,.028) 1px,transparent 1px);
     background-size:32px 32px;
     mask-image:linear-gradient(to bottom,rgba(0,0,0,.86),rgba(0,0,0,.24) 72%,transparent);}
-.ambient-halo {position:absolute; border-radius:50%; opacity:.56; will-change:transform,opacity;
+.page-grid::after {content:""; position:absolute; inset:-14%; z-index:0;
+    background:
+      radial-gradient(ellipse 56% 44% at 80% 8%,rgba(73,101,214,.18),rgba(73,101,214,.045) 48%,transparent 72%),
+      radial-gradient(ellipse 52% 46% at 12% 48%,rgba(74,154,166,.12),rgba(74,154,166,.03) 50%,transparent 74%),
+      radial-gradient(ellipse 48% 42% at 72% 88%,rgba(128,105,178,.12),rgba(128,105,178,.025) 52%,transparent 76%),
+      linear-gradient(145deg,#F5F5F1 4%,#F1F3F2 48%,#F5F3F5 96%);
+    transform-origin:center; will-change:transform,opacity,filter;
+    animation:canvasBreath 18s cubic-bezier(.45,0,.55,1) infinite;}
+.ambient-halo {position:absolute; z-index:1; border-radius:50%; opacity:.38;
+    will-change:transform,opacity;
     mix-blend-mode:multiply;}
 .halo-a {width:680px; height:680px; right:-240px; top:-220px;
     background:radial-gradient(circle,rgba(82,112,232,.24),rgba(82,112,232,.06) 44%,transparent 70%);
@@ -831,7 +840,7 @@ html {background: #F3F3F0;}
 .halo-c {width:600px; height:600px; right:8%; bottom:-310px;
     background:radial-gradient(circle,rgba(122,96,188,.14),rgba(122,96,188,.035) 48%,transparent 72%);
     animation:ambientC 23s ease-in-out infinite;}
-.route-field {position:absolute; inset:-3% -8%; width:116%; height:106%; opacity:.4;}
+.route-field {position:absolute; z-index:2; inset:-3% -8%; width:116%; height:106%; opacity:.34;}
 .route-field .route {fill:none; stroke:#6079D5; stroke-width:1; stroke-opacity:.18;
     stroke-dasharray:7 16; animation:routeFlow 28s linear infinite;}
 .route-field .route-b {stroke:#518E9C; stroke-opacity:.14; stroke-dasharray:3 20;
@@ -848,6 +857,10 @@ html {background: #F3F3F0;}
     50%{transform:translate3d(-42px,-36px,0) scale(1.08)}}
 @keyframes routeFlow {to{stroke-dashoffset:-230px}}
 @keyframes nodeBreathe {0%,100%{opacity:.12;transform:scale(.65)}50%{opacity:.42;transform:scale(1.2)}}
+@keyframes canvasBreath {
+    0%,100%{transform:translate3d(-1.2%,0,0) scale(1);opacity:.76;filter:saturate(.88)}
+    50%{transform:translate3d(1.4%,1%,0) scale(1.045);opacity:1;filter:saturate(1.03)}
+}
 
 /* Hero：深色编辑式封面，不使用高饱和渐变与发光 */
 .hero {
@@ -1032,12 +1045,6 @@ div[data-testid="stAlert"] {border-radius:8px; border-width:1px; box-shadow:none
     .hero-flow {font-size:8px; letter-spacing:.7px;}
     .hero-flow i {margin:0 5px;}
     .footer-inner {align-items:flex-start;}
-}
-@media (prefers-reduced-motion: reduce) {
-    .ambient-halo,.route-field .route,.route-field .node,.hero,.hero::before,
-    .hero-kicker::before,.hero-visual svg,.hero-flow i::after,
-    div[data-testid="stVerticalBlockBorderWrapper"],.cube {animation:none !important;}
-    .stButton>button[kind="primary"]::after {display:none;}
 }
 </style>
 """
