@@ -39,8 +39,47 @@ class EnhancedPackingRegressionTests(unittest.TestCase):
         enhanced = ContainerPacker((1200, 1000, 1000), boxes)
         _, _, stats = enhanced.pack_enhanced(time_budget=0.25, verbose=False)
 
-        self.assertGreaterEqual(stats['placed'], len(standard.packing_plan))
+        standard_used = sum(l * w * h for _, _, _, l, w, h in standard.packing_plan)
+        enhanced_used = sum(l * w * h for _, _, _, l, w, h in enhanced.packing_plan)
+        self.assertGreaterEqual(enhanced_used, standard_used)
         self.assert_valid_plan(enhanced)
+
+    def test_column_beam_fits_high_utilization_mixed_customer_case(self):
+        """高重复主货 + 多种少量辅货：验证通用混合列搜索，不依赖品名。"""
+        boxes = [
+            (365, 365, 350, 380, 15.0, 'A'),
+            (365, 365, 350, 3, 9.825, 'B'),
+            (400, 360, 270, 2, 8.1, 'C'),
+            (300, 300, 250, 1, 6.8, 'D'),
+            (320, 280, 160, 10, 15.0, 'E'),
+            (350, 280, 350, 80, 12.0, 'F'),
+            (460, 330, 210, 4, 13.2, 'G'),
+            (365, 365, 350, 131, 9.02, 'H'),
+            (540, 340, 240, 2, 10.0, 'I'),
+        ]
+        for first_type_no_flip in (True, False):
+            with self.subTest(first_type_no_flip=first_type_no_flip):
+                packer = ContainerPacker(
+                    (5800, 2350, 2350), boxes,
+                    no_flip=[first_type_no_flip, False, False, False, False,
+                             False, False, False, False])
+                fits, message, stats = packer.pack_enhanced(
+                    time_budget=30, verbose=False)
+
+                self.assertTrue(fits, message)
+                self.assertEqual(stats['placed'], 613)
+                self.assertTrue(stats['optimal_full'])
+                self.assertEqual(stats['strategy'], 'column_beam_search')
+                expected_volume = sum(l * w * h * quantity
+                                      for l, w, h, quantity, _, _ in boxes)
+                packed_volume = sum(l * w * h
+                                    for _, _, _, l, w, h in packer.packing_plan)
+                self.assertEqual(packed_volume, expected_volume)
+                self.assertEqual(
+                    Counter(info['input_order'] for info in packer.box_colors),
+                    Counter({index: box[3] for index, box in enumerate(boxes)}),
+                )
+                self.assert_valid_plan(packer)
 
     def test_layer_column_strategy_fits_customer_case_with_all_rotations(self):
         boxes = [
