@@ -550,6 +550,8 @@ def build_category_summary(packer):
             '规格(长×宽×高 m)': f"{l / MM:g}×{w / MM:g}×{h / MM:g}",
             '应装数量': n, '已装数量': p, '未装数量': n - p,
             '单件重量(kg)': weight,
+            '禁止倒放': '是' if packer.no_flip.get(io, False) else '否',
+            '优先级': packer.priority.get(io, 0),
             '已装重量(kg)': round(weight * p, 1),
             '单件体积(m³)': round(l * w * h / 1e9, 4),
             '已装体积(m³)': round(l * w * h * p / 1e9, 3),
@@ -597,7 +599,10 @@ def build_json_bytes(packer, ship_no=''):
     data = {
         'ship_no': ship_no,
         'container': [c / MM for c in packer.container],
-        'boxes': [[l / MM, w / MM, h / MM, n, weight, t, packer.descriptions.get(i, '')]
+        'boxes': [[l / MM, w / MM, h / MM, n, weight, t,
+                   packer.descriptions.get(i, ''),
+                   bool(packer.no_flip.get(i, False)),
+                   packer.priority.get(i, 0)]
                   for (l, w, h, n, weight, t, i) in packer.boxes],
         'packing_plan': [
             {'position': [p / MM for p in pos[:3]], 'dimensions': [p / MM for p in pos[3:]], 'box_info': info}
@@ -609,12 +614,16 @@ def build_json_bytes(packer, ship_no=''):
 def load_plan_into_packer(plan):
     """从已保存的方案 JSON 重建 packer（仅用于查看，不重新计算）。"""
     container = tuple(to_mm(x) for x in plan['container'])
-    boxes, descriptions = [], []
+    boxes, descriptions, no_flip, priority = [], [], [], []
     for b in plan['boxes']:
         l, w, h, n, weight, t = b[:6]
         boxes.append((to_mm(l), to_mm(w), to_mm(h), int(n), float(weight), t))
         descriptions.append(b[6] if len(b) > 6 else '')
-    packer = ContainerPacker(container, boxes, descriptions=descriptions)
+        # 第 8、9 列由新版方案保存；旧 JSON 没有这些列时保持原来的默认行为。
+        no_flip.append(_parse_bool(b[7], False) if len(b) > 7 else False)
+        priority.append(to_float(b[8], 0.0) if len(b) > 8 else 0.0)
+    packer = ContainerPacker(container, boxes, no_flip=no_flip,
+                             priority=priority, descriptions=descriptions)
     packer.packing_plan = [
         (to_mm(it['position'][0]), to_mm(it['position'][1]), to_mm(it['position'][2]),
          to_mm(it['dimensions'][0]), to_mm(it['dimensions'][1]), to_mm(it['dimensions'][2]))
@@ -693,7 +702,10 @@ def load_plan_xlsx(file_like):
         type_text = str(row['类型'] or '0').strip()
         type_code = TYPE_CODES.get(type_text, type_text)
         description = '' if row['零件描述'] is None else str(row['零件描述'])
-        categories.append((category, dims_m, quantity, weight, type_code, description))
+        no_flip = _parse_bool(row.get('禁止倒放'), False)
+        priority = to_float(row.get('优先级'), 0.0)
+        categories.append((category, dims_m, quantity, weight, type_code,
+                           description, no_flip, priority))
 
     categories.sort(key=lambda item: item[0])
     expected = list(range(1, len(categories) + 1))
@@ -702,9 +714,12 @@ def load_plan_xlsx(file_like):
         raise ValueError(f'分类汇总表的类别编号应从 1 连续排列，实际为：{actual}')
 
     boxes = [(to_mm(dims[0]), to_mm(dims[1]), to_mm(dims[2]), quantity, weight, type_code)
-             for _, dims, quantity, weight, type_code, _ in categories]
-    descriptions = [description for _, _, _, _, _, description in categories]
-    packer = ContainerPacker(container, boxes, descriptions=descriptions)
+             for _, dims, quantity, weight, type_code, _, _, _ in categories]
+    descriptions = [description for _, _, _, _, _, description, _, _ in categories]
+    no_flip = [flag for _, _, _, _, _, _, flag, _ in categories]
+    priority = [value for _, _, _, _, _, _, _, value in categories]
+    packer = ContainerPacker(container, boxes, no_flip=no_flip,
+                             priority=priority, descriptions=descriptions)
 
     detail_rows = _xlsx_table(
         wb['装箱清单'],
@@ -723,7 +738,8 @@ def load_plan_xlsx(file_like):
         if any(value <= 0 for value in placed_m) or any(value < 0 for value in position_m):
             raise ValueError(f'装载顺序 {number} 的摆放尺寸或位置无效')
 
-        _, original_m, _, category_weight, type_code, category_desc = categories[category - 1]
+        (_, original_m, _, category_weight, type_code, category_desc,
+         _, _) = categories[category - 1]
         type_counts[type_code] = type_counts.get(type_code, 0) + 1
         packer.packing_plan.append(tuple(to_mm(value) for value in position_m + placed_m))
         packer.box_colors.append({
@@ -747,6 +763,24 @@ def load_saved_plan(file_name, content):
     if lower_name.endswith('.xlsx'):
         return load_plan_xlsx(io.BytesIO(content))
     raise ValueError('仅支持网站导出的 JSON 或 XLSX 方案文件')
+
+
+def saved_plan_form_data(packer, ship_no=''):
+    """提取方案中的原始输入，供下一轮 Streamlit 渲染前恢复表单。
+
+    使用 ``packer.boxes`` 的应装数量，而不是从已装明细反推，因此未装进去的
+    货物也会完整回到清单中。
+    """
+    boxes = [tuple(box[:6]) for box in packer.boxes]
+    input_orders = [box[6] for box in packer.boxes]
+    return {
+        'container': tuple(packer.container),
+        'boxes': boxes,
+        'ship_no': str(ship_no or ''),
+        'descriptions': [packer.descriptions.get(io, '') for io in input_orders],
+        'no_flip': [bool(packer.no_flip.get(io, False)) for io in input_orders],
+        'priority': [packer.priority.get(io, 0) for io in input_orders],
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1321,6 +1355,18 @@ def main():
     # 先暂存，下一轮在输入框创建之前应用，避免 StreamlitAPIException。
     if '_pending_ship_no' in st.session_state:
         st.session_state.ship_no = st.session_state.pop('_pending_ship_no')
+    # 已保存方案的导入按钮位于尺寸和清单控件之后，不能在点击的同一轮修改
+    # 这些控件。下一轮在任何相关 widget 创建前统一恢复原始输入。
+    if '_pending_plan_form' in st.session_state:
+        pending = st.session_state.pop('_pending_plan_form')
+        container = pending['container']
+        st.session_state.cL = container[0] / MM
+        st.session_state.cW = container[1] / MM
+        st.session_state.cH = container[2] / MM
+        st.session_state.ship_no = pending['ship_no']
+        install_imported_rows(
+            pending['boxes'], pending['descriptions'],
+            pending['no_flip'], pending['priority'])
 
     # ---- 工作模式切换（自动 / 手动），需在渲染货物清单前确定 ----
     with st.sidebar:
@@ -1463,14 +1509,15 @@ def main():
         st.divider()
         st.markdown('**查看已保存方案**')
         if st.session_state.pop('_plan_import_success', False):
-            st.success('方案已载入，请在右侧查看。')
+            st.success('方案已载入，集装箱尺寸、货物清单和装箱结果均已恢复。')
         plan_file = st.file_uploader('导入方案 JSON 或 XLSX', type=['json', 'xlsx'],
                                      label_visibility='collapsed')
         if st.button('载入方案查看', icon=':material/folder_open:', use_container_width=True):
             if plan_file is not None:
                 try:
                     pk, imported_ship_no = load_saved_plan(plan_file.name, plan_file.getvalue())
-                    st.session_state._pending_ship_no = imported_ship_no  # 下一轮、widget 创建前回填
+                    st.session_state._pending_plan_form = saved_plan_form_data(
+                        pk, imported_ship_no)
                     used = sum(l * w * h for _, _, _, l, w, h in pk.packing_plan)
                     st.session_state.result = {
                         'packer': pk, 'fits': len(pk.packing_plan) == pk.total_units, 'msg': '',

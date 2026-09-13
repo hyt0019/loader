@@ -1,4 +1,5 @@
 import io
+import json
 import sys
 import types
 import unittest
@@ -41,7 +42,8 @@ sys.modules.setdefault('mpl_toolkits.mplot3d', mpl_toolkits_mplot3d_stub)
 sys.modules.setdefault('mpl_toolkits.mplot3d.art3d', mpl_toolkits_art3d_stub)
 
 from app import (build_cargo_xlsx, build_excel_bytes, build_json_bytes,
-                 install_imported_rows, load_saved_plan, parse_xlsx)
+                 install_imported_rows, load_saved_plan, parse_xlsx,
+                 saved_plan_form_data)
 from packer_pro import ContainerPacker, MM
 
 
@@ -50,7 +52,10 @@ class SavedPlanImportTests(unittest.TestCase):
         self.packer = ContainerPacker(
             (2 * MM, 2 * MM, 2 * MM),
             [(1 * MM, 0.5 * MM, 0.5 * MM, 2, 12.5, '1'),
-             (0.5 * MM, 0.5 * MM, 0.5 * MM, 1, 30.0, '0')],
+             # 应装 2 件、结果只装入 1 件，用于确认回填依据原始清单而非已装明细。
+             (0.5 * MM, 0.5 * MM, 0.5 * MM, 2, 30.0, '0')],
+            no_flip=[False, True],
+            priority=[2, 7],
             descriptions=['纸箱零件', '木箱零件'],
         )
         self.packer.packing_plan = [
@@ -67,7 +72,7 @@ class SavedPlanImportTests(unittest.TestCase):
              'input_order': 1, 'original_dimensions': (0.5, 0.5, 0.5), 'desc': '木箱零件'},
         ]
         self.stats = {
-            'placed': 3, 'total': 3, 'utilization': 0.078125,
+            'placed': 3, 'total': 4, 'utilization': 0.078125,
             'evaluations': 1, 'seconds': 0.0,
         }
 
@@ -79,6 +84,17 @@ class SavedPlanImportTests(unittest.TestCase):
         self.assertEqual([info['number'] for info in imported.box_colors], [1, 2, 3])
         self.assertEqual([info['input_order'] for info in imported.box_colors], [0, 0, 1])
         self.assertEqual([info['desc'] for info in imported.box_colors], ['纸箱零件', '纸箱零件', '木箱零件'])
+        self.assertEqual(imported.no_flip, {0: False, 1: True})
+        self.assertEqual(imported.priority, {0: 2.0, 1: 7.0})
+
+        form = saved_plan_form_data(imported, ship_no)
+        self.assertEqual(form['container'], (2 * MM, 2 * MM, 2 * MM))
+        self.assertEqual(form['ship_no'], 'SO-TEST-001')
+        self.assertEqual(form['boxes'], [box[:6] for box in self.packer.boxes])
+        self.assertEqual([box[3] for box in form['boxes']], [2, 2])
+        self.assertEqual(form['descriptions'], ['纸箱零件', '木箱零件'])
+        self.assertEqual(form['no_flip'], [False, True])
+        self.assertEqual(form['priority'], [2.0, 7.0])
 
     def test_json_export_can_be_imported(self):
         content = build_json_bytes(self.packer, 'SO-TEST-001')
@@ -89,6 +105,14 @@ class SavedPlanImportTests(unittest.TestCase):
         content = build_excel_bytes(self.packer, self.stats, 'SO-TEST-001')
         imported, ship_no = load_saved_plan('packing_plan.xlsx', content)
         self.assert_round_trip(imported, ship_no)
+
+    def test_legacy_json_without_constraints_still_loads(self):
+        content = json.loads(build_json_bytes(self.packer, 'SO-TEST-001'))
+        content['boxes'] = [box[:7] for box in content['boxes']]
+        imported, _ = load_saved_plan(
+            'legacy.json', json.dumps(content, ensure_ascii=False).encode('utf-8'))
+        self.assertEqual(imported.no_flip, {0: False, 1: False})
+        self.assertEqual(imported.priority, {0: 0.0, 1: 0.0})
 
 
 class CargoListRoundTripTests(unittest.TestCase):
