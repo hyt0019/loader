@@ -24,3 +24,4 @@ Dockerfile
 *.command
 packing_plan*.json
 data_hash.txt
+docker-compose.shared.yml

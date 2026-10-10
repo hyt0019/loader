@@ -1302,46 +1302,57 @@ class ContainerPacker:
         type_count = Counter()
         used_volume, sink_score = 0, 0.0
         container_height = self.container[2]
-        for x, y, z, a, b, c, nx, ny, nz, kind in placements:
-            for kz in range(nz):
-                for ix in range(nx):
-                    for jy in range(ny):
-                        io = queues[kind][cursor[kind]]
-                        cursor[kind] += 1
-                        position = (x + ix * a, y + jy * b, z + kz * c, a, b, c)
-                        l, w, h, quantity, weight, box_type, _ = self.boxes[io]
-                        if not self.can_place(*position, weight):
-                            return None
-                        self._place(*position)
-                        type_count[box_type] += 1
-                        self.box_colors.append({
-                            'number': len(self.box_colors) + 1,
-                            'type': box_type,
-                            'type_count': type_count[box_type],
-                            'weight': weight,
-                            'input_order': io,
-                            'original_dimensions': (l / MM, w / MM, h / MM),
-                            'desc': self.descriptions.get(io, ''),
-                        })
-                        used_volume += a * b * c
-                        sink_score += self._sink_key(self.boxes[io]) * (container_height - position[2])
+        boxes = []
+        for x, y, z, comps in placements:
+            # 组合块内先放下层子块，再放叠在上面的子块；子块内自下而上
+            for dx, dy, dz, a, b, c, nx, ny, nz, kind in sorted(comps, key=lambda comp: comp[2]):
+                for kz in range(nz):
+                    for ix in range(nx):
+                        for jy in range(ny):
+                            boxes.append((kind, (x + dx + ix * a, y + dy + jy * b,
+                                                 z + dz + kz * c, a, b, c)))
+        for kind, position in boxes:
+            io = queues[kind][cursor[kind]]
+            cursor[kind] += 1
+            l, w, h, quantity, weight, box_type, _ = self.boxes[io]
+            if not self.can_place(*position, weight):
+                return None
+            self._place(*position)
+            type_count[box_type] += 1
+            self.box_colors.append({
+                'number': len(self.box_colors) + 1,
+                'type': box_type,
+                'type_count': type_count[box_type],
+                'weight': weight,
+                'input_order': io,
+                'original_dimensions': (l / MM, w / MM, h / MM),
+                'desc': self.descriptions.get(io, ''),
+            })
+            used_volume += position[3] * position[4] * position[5]
+            sink_score += self._sink_key(self.boxes[io]) * (container_height - position[2])
         return (len(self.packing_plan), used_volume, sink_score,
                 list(self.packing_plan), [dict(info) for info in self.box_colors])
 
-    def _block_candidate(self, deadline=None):
-        """块构建候选：deadline 为空时只做一次贪心（标准版），否则束搜索到 deadline（增强版）。
+    def _block_candidate(self, deadline=None, general=False, max_evaluations=None):
+        """块构建候选：只做一次贪心，或束搜索到 deadline / 达到 max_evaluations 次补全为止。
 
+        general=True 时同时使用组合块（不同货物拼成的块）。
         返回 (候选解, 统计)；候选解格式与其他直接生成的策略一致。
         """
         kinds = self._block_kinds()
         if not kinds:
             return None, {}
-        search = BlockSearch(self.container, [(orientations, len(units)) for orientations, units in kinds])
-        best = search.greedy()
+        search = BlockSearch(self.container, [(orientations, len(units)) for orientations, units in kinds],
+                             general=general)
+        greedy = best = search.greedy()
         width = 0
-        if deadline is not None and time.time() < deadline:
-            best, width = search.beam_search(deadline, best)
+        has_budget = (deadline is not None and time.time() < deadline) or max_evaluations
+        if has_budget and best.volume < search.total_volume:
+            best, width = search.beam_search(deadline, best, max_evaluations)
         candidate = self._materialize_blocks(best.placements(), kinds)
+        if candidate is None and best is not greedy:
+            # 理论上不会发生：展开复核失败时退回贪心方案，避免整个候选作废
+            candidate = self._materialize_blocks(greedy.placements(), kinds)
         return candidate, {'evaluations': search.evaluations, 'beam_width': width}
 
     # ---------------- 单个策略的装箱 ---------------- #
@@ -1470,16 +1481,29 @@ class ContainerPacker:
         return ordered, orient_map
 
     # ---------------- 对外：标准版 ---------------- #
-    def pack(self):
-        """标准版：块构建贪心 与 原有确定性逐箱策略（长宽两种朝向 × 多种排序）取更优者。
+    # 标准版块构建束搜索的补全次数上限：按次数而非时间封顶，同样输入结果完全一致
+    STANDARD_BEAM_EVALUATIONS = 100
 
-        块构建通常更紧密；原有策略作为下界保留，因此结果不会差于其中任何一种。
+    def pack(self):
+        """标准版：块构建（贪心 + 短束搜索 + 组合块贪心）与原有逐箱策略取更优者。
+
+        依次尝试，任何一步已把货物全部装入就立即返回；都装不下时再运行原有的
+        确定性逐箱策略（长宽两种朝向 × 多种排序）作为下界，取体积最大的方案。
+        全程不按时间截断，同样的输入每次结果相同。
         返回 (是否全部装入, 说明)。
         """
         total = self.total_units
         if self.bottom_metric == 'manual':
             return self._pack_manual(total)  # 手动模式：严格按用户优先级摆放
-        block, _ = self._block_candidate()
+        block = None
+        for options in ({}, {'general': True}):
+            candidate, _ = self._block_candidate(
+                max_evaluations=self.STANDARD_BEAM_EVALUATIONS if not options else None, **options)
+            if candidate is not None and (block is None
+                                          or self._candidate_fit(candidate) > self._candidate_fit(block)):
+                block = candidate
+            if block is not None and block[0] == total:
+                break
         best_fit, best = None, None
         if block is not None:
             best_fit = self._candidate_fit(block)
@@ -1600,6 +1624,12 @@ class ContainerPacker:
             evals += beam_info.get('evaluations', 0)
             consider_direct(beam, 'block_beam_search')
 
+        # --- 组合块贪心：放在简单块束搜索之后，不挤占它的时间份额。---
+        if not complete():
+            block, info = self._block_candidate(general=True)
+            evals += info.get('evaluations', 0)
+            consider_direct(block, 'general_block_greedy')
+
         # 列模式束搜索擅长「少种类、高重复」的清单；若它直接装完即可结束。
         if time_budget >= 30 and not complete():
             beam_share = 0.7
@@ -1632,6 +1662,14 @@ class ContainerPacker:
             dense = self._dense_column_candidate(deadline=t0 + time_budget * 0.85,
                                                  rng_seed=rng_seed)
             consider_direct(dense, 'dense_columns')
+
+        # --- 组合块束搜索：不同货物拼成的块，对种类多、每种件数少的清单更有效。
+        #     使用原先留给遗传搜索的时间，不占用上面简单块束搜索的份额。---
+        if not complete() and time.time() - t0 < time_budget * 0.97:
+            general, general_info = self._block_candidate(
+                deadline=t0 + time_budget * 0.97, general=True)
+            evals += general_info.get('evaluations', 0)
+            consider_direct(general, 'general_block_beam_search')
 
         # --- 遗传搜索（种子未达 100% 时启动；长宽朝向也作为基因参与进化）---
         if not complete():

@@ -4,7 +4,9 @@
 思路来自单箱装载问题（single container loading problem）的主流方法：
 Fanslau & Bortfeldt (2010) CLTRS、Zhu & Lim (2012) ID-GLA、Araya & Riff (2014) BSG。
 
-- 块：同一类、同一朝向的货物先拼成 nx×ny×nz 的整齐长方体（简单块），成块摆放；
+- 简单块：同一类、同一朝向的货物拼成 nx×ny×nz 的整齐长方体，成块摆放；
+- 组合块：两个块沿长、宽或高拼接，外包长方体至少 99.5% 被货物填满时成为一个更大的块，
+  可以把尺寸相近的不同货物拼在一起（种类多、每种件数少时尤其有用）；
 - 空间：柜内剩余空间用相互重叠的「极大空闲空间」表示，放块后按差集更新，不漏可放位置；
 - 选择：每步取离柜角最近的空间，在该角放「体积大、留下无用缝隙少」的块；
 - 搜索：束搜索每层保留若干部分方案，按贪心补全后的装载体积排序；束宽逐轮加倍，
@@ -12,11 +14,22 @@ Fanslau & Bortfeldt (2010) CLTRS、Zhu & Lim (2012) ID-GLA、Araya & Riff (2014)
 
 所有坐标为整数毫米。支撑规则（与几何内核一致）：非落地货物的底面中心必须落在
 下方接触面的凸包内部，即重心有支撑、不会悬空倾倒。
+
+块的内部表示：
+  comps  = ((dx, dy, dz, a, b, c, nx, ny, nz, kind), ...)  相对块原点的若干简单子块
+  counts = ((kind, 件数), ...)
+候选块  = (评分, 体积, 并列次序, bx, by, bz, comps, counts)
 """
 import time
+from bisect import bisect_left, bisect_right
+from operator import itemgetter
 
 # 填充顺序：先沿哪个轴排满（0=长 x，1=宽 y，2=高 z），得到不同形状的简单块
 _FILL_ORDERS = ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0))
+# 按 (评分, 体积, 并列次序) 从大到小排序；简单块的并列次序为 (类别, 朝向, 件数排布)，
+# 与最初版本完全一致，组合块在并列时排在简单块之后
+_SCORE = itemgetter(0, 1, 2)
+_GENERAL_TIE = (-1,)
 
 
 # --------------------------------------------------------------------------- #
@@ -95,6 +108,7 @@ class _State:
         self.chain = chain
 
     def placements(self):
+        """按放置先后返回 [(x, y, z, comps), ...]。"""
         out = []
         node = self.chain
         while node is not None:
@@ -105,9 +119,17 @@ class _State:
 
 
 class BlockSearch:
-    """kinds: [(允许朝向列表 [(a, b, c), ...], 件数), ...]；朝向第三维为高度。"""
+    """kinds: [(允许朝向列表 [(a, b, c), ...], 件数), ...]；朝向第三维为高度。
 
-    def __init__(self, container, kinds):
+    general=True 时额外生成组合块（不同货物拼成的块），最多 max_general 个。
+    """
+
+    MIN_FILL = 0.995     # 组合块外包长方体的最低填充率（BR 测试集上 0.995 优于 0.98）
+    SEED_MAX = 4         # 组合块种子：每类最多几件排成一行 / 一列 / 一叠
+    GENERAL_ROUNDS = 2   # 组合轮数（每轮把两个块拼成一个）
+    MAX_GENERAL = 500    # 组合块池上限：块池越大，每步扫描越慢、搜索次数越少
+
+    def __init__(self, container, kinds, general=False, max_general=None):
         self.L, self.W, self.H = (int(v) for v in container)
         self.orients = [tuple(sorted(set(o))) for o, _ in kinds]
         self.counts = tuple(int(n) for _, n in kinds)
@@ -117,6 +139,115 @@ class BlockSearch:
             for o in self.orients]
         self.total_volume = sum(v * n for v, n in zip(self.volumes, self.counts))
         self.evaluations = 0
+        self.pool = self._general_pool(max_general or self.MAX_GENERAL) if general else []
+
+    # ---------------- 组合块 ---------------- #
+    def _general_pool(self, limit):
+        """生成组合块池：种子为每类的单件 / 短行 / 短列 / 短叠，逐轮两两拼接。
+
+        只保留至少含两个子块的组合（单一简单块在搜索时按空间现场生成）。
+        """
+        L, W, H = self.L, self.W, self.H
+        seeds = []
+        for k, n in enumerate(self.counts):
+            if not n:
+                continue
+            unit = self.volumes[k]
+            for a, b, c in self.orients[k]:
+                shapes = {(1, 1, 1)}
+                for m in range(2, min(n, self.SEED_MAX) + 1):
+                    shapes.update(((m, 1, 1), (1, m, 1), (1, 1, m)))
+                for nx, ny, nz in shapes:
+                    bx, by, bz = nx * a, ny * b, nz * c
+                    if bx > L or by > W or bz > H:
+                        continue
+                    count = nx * ny * nz
+                    seeds.append((bx, by, bz, count * unit,
+                                  ((0, 0, 0, a, b, c, nx, ny, nz, k),), ((k, count),), True))
+        if len(self.counts) < 2 or not seeds:
+            return []
+
+        known = {(s[0], s[1], s[2], s[5]) for s in seeds}
+        combos = []
+        level = seeds
+        base = list(seeds)
+        for _ in range(self.GENERAL_ROUNDS):
+            produced = []
+            for axis in (0, 1, 2):
+                produced.extend(self._combine_all(level, base, axis, known))
+            if not produced:
+                break
+            produced.sort(key=lambda blk: blk[3], reverse=True)
+            produced = produced[:limit]
+            combos.extend(produced)
+            base.extend(produced)
+            level = produced
+        combos.sort(key=lambda blk: blk[3], reverse=True)
+        # 存为 (bx, by, bz, 体积, comps, counts)
+        return [blk[:6] for blk in combos[:limit]]
+
+    def _combine_all(self, level, base, axis, known):
+        """把 level 中每个块与 base 中接触面尺寸相近的块沿 axis 拼接。"""
+        L, W, H = self.L, self.W, self.H
+        fill = self.MIN_FILL
+        # 接触面的两个尺寸（axis=2 时为上下两块的底面）
+        if axis == 0:
+            fa, fb = 1, 2
+        elif axis == 1:
+            fa, fb = 0, 2
+        else:
+            fa, fb = 0, 1
+        ordered = sorted(base, key=itemgetter(fa))
+        keys = [blk[fa] for blk in ordered]
+        out = []
+        for b1 in level:
+            low = b1[fa] * fill
+            high = b1[fa] / fill if axis < 2 else b1[fa]
+            for b2 in ordered[bisect_left(keys, low):bisect_right(keys, high)]:
+                if axis < 2:
+                    if not (b1[fb] * fill <= b2[fb] <= b1[fb] / fill):
+                        continue
+                else:
+                    # 叠放：上块必须完全落在下块平整的顶面内
+                    if not b1[6] or b2[fb] > b1[fb]:
+                        continue
+                combo = self._combine(b1, b2, axis, known, L, W, H, fill)
+                if combo is not None:
+                    out.append(combo)
+        return out
+
+    def _combine(self, b1, b2, axis, known, L, W, H, fill):
+        x1, y1, z1, v1, comps1, counts1, flat1 = b1
+        x2, y2, z2, v2, comps2, counts2, flat2 = b2
+        # flat：顶面在最高处完全被货物覆盖，之后才允许在上面叠放其他块
+        if axis == 0:
+            bx, by, bz, off = x1 + x2, max(y1, y2), max(z1, z2), (x1, 0, 0)
+            flat = flat1 and flat2 and z1 == z2 and y1 == y2
+        elif axis == 1:
+            bx, by, bz, off = max(x1, x2), y1 + y2, max(z1, z2), (0, y1, 0)
+            flat = flat1 and flat2 and z1 == z2 and x1 == x2
+        else:
+            bx, by, bz, off = x1, y1, z1 + z2, (0, 0, z1)
+            flat = flat2 and x2 == x1 and y2 == y1
+        if bx > L or by > W or bz > H:
+            return None
+        volume = v1 + v2
+        if volume < fill * bx * by * bz:
+            return None
+        merged = dict(counts1)
+        for k, n in counts2:
+            merged[k] = merged.get(k, 0) + n
+            if merged[k] > self.counts[k]:
+                return None
+        counts = tuple(sorted(merged.items()))
+        ox, oy, oz = off
+        comps = comps1 + tuple((dx + ox, dy + oy, dz + oz) + comp[3:] for comp in comps2
+                               for dx, dy, dz in [comp[:3]])
+        key = (bx, by, bz, counts)  # 同样外形、同样货物组成的块只保留一个
+        if key in known:
+            return None
+        known.add(key)
+        return (bx, by, bz, volume, comps, counts, flat)
 
     # ---------------- 基本操作 ---------------- #
     def root(self):
@@ -163,7 +294,7 @@ class BlockSearch:
         return best_i
 
     def _candidates(self, space, remaining, mins):
-        """为空间生成候选简单块，按评分从高到低排序。
+        """为空间生成候选块（简单块 + 放得下的组合块），按评分从高到低排序。
 
         评分 = 块体积 - 估计浪费：块与空间之间若剩下的缝隙比任何剩余货物都窄，
         这条缝就再也用不上，按缝隙体积扣分。
@@ -192,7 +323,8 @@ class BlockSearch:
                         shapes.add((n[0], n[1], n[2]))
                 for nx, ny, nz in shapes:
                     bx, by, bz = nx * a, ny * b, nz * c
-                    volume = nx * ny * nz * unit
+                    count = nx * ny * nz
+                    volume = count * unit
                     waste = 0
                     rx, ry, rz = sx - bx, sy - by, sz - bz
                     if 0 < rx < mnx:
@@ -201,15 +333,31 @@ class BlockSearch:
                         waste += bx * ry * bz
                     if 0 < rz < mnz:
                         waste += bx * by * rz
-                    out.append((volume - waste, volume, k, a, b, c, nx, ny, nz))
-        out.sort(reverse=True)
+                    out.append((volume - waste, volume, (k, a, b, c, nx, ny, nz), bx, by, bz,
+                                ((0, 0, 0, a, b, c, nx, ny, nz, k),), ((k, count),)))
+        for bx, by, bz, volume, comps, counts in self.pool:
+            if bx > sx or by > sy or bz > sz:
+                continue
+            for k, n in counts:
+                if remaining[k] < n:
+                    break
+            else:
+                waste = bx * by * bz - volume  # 组合块内部的空隙
+                rx, ry, rz = sx - bx, sy - by, sz - bz
+                if 0 < rx < mnx:
+                    waste += rx * by * bz
+                if 0 < ry < mny:
+                    waste += bx * ry * bz
+                if 0 < rz < mnz:
+                    waste += bx * by * rz
+                out.append((volume - waste, volume, _GENERAL_TIE, bx, by, bz, comps, counts))
+        out.sort(key=_SCORE, reverse=True)
         return out
 
     def _position(self, space, cand, tops):
         """在空间底面四角中依次尝试（离柜角近的优先），返回第一个底层全部有支撑的位置。"""
         x1, y1, z1, x2, y2, z2 = space
-        _, _, _, a, b, _, nx, ny, _ = cand
-        bx, by = nx * a, ny * b
+        bx, by, comps = cand[3], cand[4], cand[6]
         left = x1 <= self.L - x2
         front = y1 <= self.W - y2
         xs = (x1, x2 - bx) if left else (x2 - bx, x1)
@@ -225,20 +373,24 @@ class BlockSearch:
                 if (px, py) in tried:
                     continue
                 tried.add((px, py))
-                if self._block_supported(px, py, a, b, nx, ny, rects):
+                if self._block_supported(px, py, bx, by, comps, rects):
                     return px, py
         return None
 
     @staticmethod
-    def _block_supported(px, py, a, b, nx, ny, rects):
-        qx, qy = px + nx * a, py + ny * b
+    def _block_supported(px, py, bx, by, comps, rects):
+        qx, qy = px + bx, py + by
         for x1, y1, x2, y2 in rects:  # 整块底面落在同一个支撑面内：每件都有支撑
             if x1 <= px and y1 <= py and qx <= x2 and qy <= y2:
                 return True
-        for i in range(nx):
-            for j in range(ny):
-                if not center_supported(px + i * a, py + j * b, a, b, rects):
-                    return False
+        for dx, dy, dz, a, b, _, nx, ny, _, _ in comps:
+            if dz:
+                continue  # 叠在其他子块上的子块由块内部支撑
+            ox, oy = px + dx, py + dy
+            for i in range(nx):
+                for j in range(ny):
+                    if not center_supported(ox + i * a, oy + j * b, a, b, rects):
+                        return False
         return True
 
     @staticmethod
@@ -288,16 +440,21 @@ class BlockSearch:
         return result
 
     def _apply(self, spaces, remaining, tops, space, cand, pos, mins):
-        """把候选块放到 pos，原地更新 remaining / tops，返回新的空间列表与放置记录。"""
-        _, volume, k, a, b, c, nx, ny, nz = cand
+        """把候选块放到 pos，原地更新 remaining / tops，返回新的空间列表、放置记录与件数。"""
+        _, volume, _, bx, by, bz, comps, counts = cand
         px, py = pos
         z = space[2]
-        box = (px, py, z, px + nx * a, py + ny * b, z + nz * c)
-        remaining[k] -= nx * ny * nz
-        top = box[5]
-        tops[top] = tops.get(top, ()) + ((box[0], box[1], box[3], box[4]),)
+        placed = 0
+        for k, n in counts:
+            remaining[k] -= n
+            placed += n
+        for dx, dy, dz, a, b, c, nx, ny, nz, _ in comps:
+            top = z + dz + nz * c
+            rect = (px + dx, py + dy, px + dx + nx * a, py + dy + ny * b)
+            tops[top] = tops.get(top, ()) + (rect,)
+        box = (px, py, z, px + bx, py + by, z + bz)
         new_mins = self._mins(remaining) or mins
-        return self._update_spaces(spaces, box, new_mins), (px, py, z, a, b, c, nx, ny, nz, k), volume
+        return self._update_spaces(spaces, box, new_mins), (px, py, z, comps), volume, placed
 
     # ---------------- 贪心补全 ---------------- #
     def complete(self, state, deadline=None):
@@ -317,9 +474,10 @@ class BlockSearch:
                 for cand in self._candidates(space, remaining, mins):
                     pos = self._position(space, cand, tops)
                     if pos is not None:
-                        spaces, record, gained = self._apply(spaces, remaining, tops, space, cand, pos, mins)
+                        spaces, record, gained, pieces = self._apply(
+                            spaces, remaining, tops, space, cand, pos, mins)
                         volume += gained
-                        count += cand[6] * cand[7] * cand[8]
+                        count += pieces
                         chain = (record, chain)
                         placed = True
                         break
@@ -345,9 +503,10 @@ class BlockSearch:
                     continue
                 remaining = list(state.remaining)
                 tops = dict(state.tops)
-                new_spaces, record, gained = self._apply(spaces, remaining, tops, space, cand, pos, mins)
+                new_spaces, record, gained, pieces = self._apply(
+                    spaces, remaining, tops, space, cand, pos, mins)
                 children.append(_State(new_spaces, remaining, tops, state.volume + gained,
-                                       state.count + cand[6] * cand[7] * cand[8], (record, state.chain)))
+                                       state.count + pieces, (record, state.chain)))
                 if len(children) >= width:
                     break
             if children:
@@ -359,21 +518,28 @@ class BlockSearch:
     def greedy(self):
         return self.complete(self.root())
 
-    def beam_search(self, deadline, best=None):
+    def beam_search(self, deadline=None, best=None, max_evaluations=None):
         """束搜索：每层每个方案展开若干块，子方案以贪心补全后的体积排序保留前 w 个。
 
-        束宽 w 逐轮加倍，直到 deadline；全部装入时提前结束。若某轮束宽并未截断任何
+        束宽 w 逐轮加倍，直到 deadline 或贪心补全次数达到 max_evaluations（二者至少给一个；
+        只给次数上限时结果完全可复现）；全部装入时提前结束。若某轮束宽并未截断任何
         子方案，说明加宽无效，改为增加每个方案展开的块数；两者都未起限制作用时，
         搜索已经穷尽，直接结束。
         返回 (最好的完整方案, 已完成的最大束宽)。
         """
         if best is None:
             best = self.greedy()
+        limit = None if max_evaluations is None else self.evaluations + max_evaluations
+
+        def out_of_budget():
+            return ((deadline is not None and time.time() >= deadline)
+                    or (limit is not None and self.evaluations >= limit))
+
         width, branch, finished = 1, 2, 0
-        while time.time() < deadline and best.volume < self.total_volume:
+        while not out_of_budget() and best.volume < self.total_volume:
             beam = [self.root()]
             truncated = branched = False
-            while beam and time.time() < deadline:
+            while beam and not out_of_budget():
                 scored = []
                 for node in beam:
                     children = self._children(node, branch)
@@ -385,7 +551,7 @@ class BlockSearch:
                                 final.volume == best.volume and final.count > best.count):
                             best = final
                         scored.append((final.volume, final.count, child))
-                        if time.time() >= deadline or best.volume >= self.total_volume:
+                        if out_of_budget() or best.volume >= self.total_volume:
                             return best, finished
                 scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
                 beam, seen = [], set()
@@ -398,7 +564,7 @@ class BlockSearch:
                         break
                     seen.add(signature)
                     beam.append(child)
-            if time.time() >= deadline:
+            if out_of_budget():
                 break
             finished = width
             if truncated:

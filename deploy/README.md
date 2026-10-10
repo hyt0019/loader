@@ -73,6 +73,56 @@ docker compose up -d --build
 `LOADER_JOB_EXTRA_SECONDS`（硬性时限余量，默认 600 秒）。需要时在 `docker-compose.yml` 的
 `environment` 中添加。
 
+## 已有 Caddy 网关容器时（与其他系统共用服务器）
+
+服务器上已经有其他 Docker 项目用 Caddy 占着 80/443 时，不要再启动本项目的 Caddy，
+而是让装箱网站加入那个网关的 Docker 网络，再在它的 Caddyfile 里为子域名加一个站点。
+
+1. 查网关容器所在的网络名（把容器名换成你的网关容器）：
+
+   ```bash
+   docker inspect <网关容器名> --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+   ```
+
+2. 启动装箱网站（只启动网站本身，默认同时只算一个任务、内存上限 400 MB、CPU 上限 1 核）：
+
+   ```bash
+   git clone https://github.com/hyt0019/loader.git && cd loader
+   echo "GATEWAY_NETWORK=<上一步查到的网络名>" > .env
+   docker compose -f docker-compose.shared.yml up -d --build
+   ```
+
+3. 在网关的 Caddyfile 末尾加一个站点块，然后重新加载 Caddy：
+
+   ```caddy
+   loader.example.com {
+   	encode zstd gzip
+   	reverse_proxy hyt-loader:8000
+   }
+   ```
+
+   ```bash
+   docker exec <网关容器名> caddy reload --config /etc/caddy/Caddyfile
+   ```
+
+   如果 Caddyfile 是打包在网关镜像里的（`docker inspect <网关容器名>` 的 Mounts 中没有 Caddyfile），
+   不必重建网关镜像，可以把改好的配置复制进正在运行的容器再热加载，ERP 等其他站点不会中断：
+
+   ```bash
+   docker cp <网关容器名>:/etc/caddy/Caddyfile /tmp/Caddyfile      # 取出当前生效的配置
+   nano /tmp/Caddyfile                                             # 在末尾加上上面的站点块
+   docker cp /tmp/Caddyfile <网关容器名>:/etc/caddy/Caddyfile
+   docker exec <网关容器名> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   docker exec <网关容器名> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+   复制进容器的修改在网关容器被重新创建后会丢失，所以请把同样的站点块也加到网关项目源码里的 Caddyfile，
+   以后重建网关时自然保留。
+
+4. 把子域名的 A 记录解析到服务器 IP，Caddy 会自动申请 HTTPS 证书。
+
+资源上限可在 `.env` 中用 `LOADER_MEM_LIMIT`、`LOADER_CPUS`、`LOADER_MAX_RUNNING` 调整。
+
 ## 已有 nginx 时
 
 如果服务器上已经有 nginx 在使用 80/443，就不要启动 Caddy，只启动应用容器：

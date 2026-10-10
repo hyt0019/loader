@@ -90,6 +90,41 @@ class BlockSearchTests(unittest.TestCase):
         best, _ = search.beam_search(time.time() + 1.5)
         self.assertGreaterEqual(best.volume, greedy.volume)
 
+    def test_general_block_pool_is_dense_and_within_quantities(self):
+        kinds = [([(400, 300, 250), (300, 400, 250)], 3), ([(400, 300, 248)], 4),
+                 ([(200, 300, 250), (300, 200, 250)], 6), ([(398, 302, 250)], 2)]
+        search = BlockSearch((2400, 2000, 1800), kinds, general=True)
+        self.assertTrue(search.pool)
+        for bx, by, bz, volume, comps, counts in search.pool:
+            self.assertGreaterEqual(volume, BlockSearch.MIN_FILL * bx * by * bz)
+            self.assertTrue(bx <= 2400 and by <= 2000 and bz <= 1800)
+            self.assertGreaterEqual(len(comps), 2)
+            for kind, n in counts:
+                self.assertLessEqual(n, kinds[kind][1])
+            self.assertEqual(sum(n for _, n in counts),
+                             sum(comp[6] * comp[7] * comp[8] for comp in comps))
+
+    def test_general_block_plan_is_valid(self):
+        boxes = [(400, 300, 250, 3, 5.0, '1'), (400, 300, 248, 4, 5.0, '1'), (200, 300, 250, 6, 3.0, '1'),
+                 (398, 302, 250, 2, 4.0, '0'), (610, 420, 380, 5, 9.0, '0'), (300, 300, 300, 7, 2.0, '1')]
+        packer = ContainerPacker((2400, 2000, 1800), boxes)
+        candidate, _ = packer._block_candidate(deadline=time.time() + 1, general=True)
+        self.assertIsNotNone(candidate)
+        assert_valid_plan(self, packer)
+        counts = Counter(info['input_order'] for info in packer.box_colors)
+        for index, box in enumerate(boxes):
+            self.assertLessEqual(counts[index], box[3])
+
+    def test_standard_is_deterministic(self):
+        boxes = [(310, 250, 300, 15, 8.0, 'A'), (280, 220, 350, 12, 6.0, 'B'),
+                 (190, 170, 200, 20, 3.0, 'C'), (500, 400, 300, 3, 9.0, 'D')]
+        plans = []
+        for _ in range(2):
+            packer = ContainerPacker((1200, 1000, 1000), boxes)
+            packer.pack()
+            plans.append(list(packer.packing_plan))
+        self.assertEqual(plans[0], plans[1])
+
     def test_standard_is_never_worse_than_original_box_by_box_policies(self):
         cases = [
             ((1200, 1000, 1000), [(310, 250, 300, 15, 8.0, 'A'), (280, 220, 350, 12, 6.0, 'B'),
