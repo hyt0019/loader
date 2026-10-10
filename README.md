@@ -72,16 +72,19 @@ flowchart LR
 
 ## 本地运行
 
-要求 Python 3.9 或更高版本。
+要求 Python 3.12 或更高版本。
 
 ```bash
 git clone https://github.com/hyt0019/loader.git
 cd loader
-pip install -r requirements_web.txt
-streamlit run app.py
+pip install -r requirements-server.txt
+python -m uvicorn server.main:app --port 8000
 ```
 
-浏览器将打开 `http://localhost:8501`。Windows 可直接运行 `run_web_app.bat`，macOS 可运行 `run_web_app.command`。
+浏览器打开 `http://localhost:8000`。网页是纯静态文件，无需前端构建；三维查看、高亮、分段等交互都在浏览器中完成，
+服务器只负责计算与文件导入导出。货物清单和最近一次结果会自动保存在浏览器中，刷新页面不会丢失。
+
+旧版 Streamlit 工作台仍然保留：`pip install -r requirements_web.txt && streamlit run app.py`（或运行 `run_web_app.bat` / `run_web_app.command`）。
 
 ## 使用流程
 
@@ -110,19 +113,31 @@ TXT 文件使用以下结构，尺寸单位为米：
 ## 系统结构
 
 ```text
-app.py                    Streamlit 工作台、Plotly 三维视图、导入导出
-packer_pro.py             整数几何内核、标准与增强求解器
-tests/                    算法与方案导入回归测试
-.streamlit/config.toml    网页主题和部署配置
+server/                   网站后端（FastAPI）：计算任务调度（独立子进程、排队、取消）与文件接口
+web/                      网站前端：静态页面 + Three.js 三维查看器（web/vendor 为按需打包的 three.js）
+planner_core.py           清单解析、方案导入导出、实时预估等通用逻辑（网站与 Streamlit 版共用）
+packer_pro.py             整数几何内核、标准与增强求解器（也可作为桌面命令行运行）
+app.py                    旧版 Streamlit 工作台
+tests/                    算法、方案导入与网站接口回归测试
+deploy/                   Caddy 配置与服务器部署说明
+Dockerfile                网站镜像；docker-compose.yml 同时启动网站与 Caddy（自动 HTTPS）
 sample_data.txt           可直接导入的示例清单
-requirements*.txt         本地与云端运行依赖
 ```
 
-网页端调用 `packer_pro.py` 中的同一套求解与校验逻辑；桌面命令行也可直接运行该文件。
+网站、Streamlit 版与桌面命令行调用的是 `packer_pro.py` 中同一套求解与校验逻辑。
 
 ## 部署
 
-Streamlit Community Cloud 可直接从 GitHub 部署：选择本仓库和目标分支，入口文件填写 `app.py`。代码推送后，Cloud 会自动同步并重新运行应用。
+**自有服务器（Docker，推荐）**：仓库自带 `Dockerfile` 与 `docker-compose.yml`，由 Caddy 自动签发 HTTPS 证书。
+
+```bash
+cp .env.example .env        # 填写 DOMAIN=你的子域名
+docker compose up -d --build
+```
+
+域名解析、防火墙、国内镜像源、已有 nginx 等完整步骤见 [deploy/README.md](deploy/README.md)。
+
+**Streamlit Community Cloud（旧版）**：选择本仓库和目标分支，入口文件填写 `app.py`。
 
 ## License
 

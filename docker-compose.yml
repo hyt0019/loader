@@ -1,0 +1,39 @@
+# 用法：复制 .env.example 为 .env 并填好子域名，然后执行
+#   docker compose up -d --build
+services:
+  loader:
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: hyt-loader:latest
+    restart: unless-stopped
+    environment:
+      # 同时运行的计算数（默认等于 CPU 核数），其余排队
+      LOADER_MAX_RUNNING: ${LOADER_MAX_RUNNING:-2}
+      # 增强版搜索时间上限（秒）
+      LOADER_MAX_BUDGET: ${LOADER_MAX_BUDGET:-600}
+    # 只绑定本机回环地址：外部访问统一走 caddy（HTTPS）。
+    # 若服务器上已有 nginx 等反向代理，可以不启动 caddy，直接反代到 127.0.0.1:8000。
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - loader
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?请在 .env 中设置 DOMAIN，例如 DOMAIN=loader.example.com}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # 证书保存在这里，重建容器不会重复申请
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

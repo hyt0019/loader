@@ -1,0 +1,5 @@
+# Caddy 会为 DOMAIN 自动申请并续期 HTTPS 证书（Let's Encrypt），并压缩传输内容。
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy loader:8000
+}

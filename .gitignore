@@ -29,3 +29,6 @@ data_hash.txt
 # ---- 操作系统 ----
 .DS_Store
 Thumbs.db
+
+# ---- Docker 部署的本地配置（含域名等）----
+.env
