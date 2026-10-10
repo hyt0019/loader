@@ -68,7 +68,7 @@
         <ul>
           <li><strong>底层优先（软规则）</strong>：可选择让「重的」或「体积重(密度)大的」货物<strong>优先放到底层</strong>；这是偏好而非硬性限制，实在放不下时仍允许叠放。</li>
           <li><strong>禁止倒放（硬规则）</strong>：在货物清单里勾选「禁止倒放」的货物，落地面固定为<strong>长×宽</strong>、高度只能是原始高度。</li>
-          <li><strong>支撑规则</strong>：任何不落地的货物，底面至少要有 <strong>60%</strong> 被下方货物支撑，避免悬空。</li>
+          <li><strong>支撑规则</strong>：任何不落地的货物，<strong>底面中心正下方必须有货物托住</strong>（重心有支撑），不会悬空或倾倒；横跨两件货物摆放也可以。</li>
           <li><strong>两种工作模式</strong>：<strong>自动模式</strong>由程序按所选指标决定底层优先；<strong>手动模式</strong>由你为每类货物设定「优先级」，优先级高的放底层。</li>
         </ul>
         <h4>怎么用（5 步）</h4>
@@ -77,7 +77,7 @@
           <li><strong>填货物清单</strong>：逐行填写长/宽/高/数量/重量，类型可选<strong>木箱 / 纸箱 / 托盘</strong>；每行最右侧可删除该行。
             也可展开「从文件 / 文本导入」批量导入 txt / xlsx。</li>
           <li><strong>设参数</strong>：选择工作模式、底层优先指标与计算模式。<strong>标准版</strong>快速稳定；
-            <strong>增强版</strong>组合列模式生成、二维排样、有界束搜索与遗传重启，通常能找到更紧密的方案（可设搜索时间上限）。</li>
+            <strong>增强版</strong>把同类货物拼成整齐的块，用束搜索同时比较多种摆法，时间越长通常越紧密（可设搜索时间上限，全部装入会提前结束）。</li>
           <li><strong>点「开始计算」</strong>。计算在服务器上进行，期间可随时取消。</li>
           <li><strong>看结果 &amp; 导出</strong>：查看装载率、三维图与清单，可下载 <strong>Excel 装箱清单</strong> 与 <strong>JSON 方案</strong>。</li>
         </ol>

@@ -13,8 +13,11 @@
      并在全部货物装入时立即停止——因此增强版在数学上保证【不劣于】标准版。
 
 几何内核：所有几何量使用整数毫米(mm)，碰撞检测用均匀网格空间索引，
-支撑检测用"顶面高度表"，候选位置用增量维护的极点集合。经随机对拍验证与
-暴力法完全一致。
+支撑检测用"顶面高度表"，候选位置用增量维护的极点集合。
+支撑规则：非落地货物的底面中心必须落在下方接触面的凸包内（重心有支撑，不会悬空）。
+
+块构建束搜索（block_engine.py）：同类货物拼成整齐的块，用极大空闲空间记录剩余
+空间，束搜索逐轮加宽；标准版取其贪心结果与原有逐箱策略中更好者，增强版持续搜索。
 ================================================================
 """
 
@@ -28,6 +31,8 @@ import os
 import hashlib
 import random
 import time
+
+from block_engine import BlockSearch, center_supported
 
 _plt = None
 
@@ -296,25 +301,14 @@ class ContainerPacker:
                     y < oy + ow and y + w > oy and
                     z < oz + oh and z + h > oz):
                 return False
-        if z > 0:
-            area = l * w
-            support = 0
-            for ox, oy, oz, ol, ow, oh in self.top_map.get(z, ()):  # 顶面恰好接触本箱底面
-                overlap_x = min(x + l, ox + ol) - max(x, ox)
-                overlap_y = min(y + w, oy + ow) - max(y, oy)
-                if overlap_x > 0 and overlap_y > 0:
-                    support += overlap_x * overlap_y
-            # support/area < 0.6  <=>  support*5 < area*3 （整数精确比较）
-            if support * 5 < area * 3:
-                return False
-        return True
+        return z == 0 or center_supported(x, y, l, w, self.top_map.get(z, ()))
 
     def _place(self, x, y, z, l, w, h):
         idx = len(self.occupied)
         box = (x, y, z, l, w, h)
         self.occupied.append(box)
         self.packing_plan.append(box)
-        self.top_map[z + h].append(box)
+        self.top_map[z + h].append((x, y, x + l, y + w))  # 顶面矩形，供支撑判断
         for cell in self._cells(x, y, z, l, w, h):
             self.grid[cell].append(idx)
         if self.points:
@@ -498,7 +492,7 @@ class ContainerPacker:
         """列生成 + MaxRects 混合启发式；不适用时返回 None。
 
         该策略专门补足逐箱极点贪心在高重复、小尺寸种类场景中的短板。它只使用
-        完全嵌套的竖向列，因此天然满足不碰撞和 60% 支撑约束；最终仍由正式内核复核。
+        完全嵌套的竖向列，因此天然满足不碰撞和重心支撑约束；最终仍由正式内核复核。
         """
         groups = self._dense_groups()
         if len(groups) < 2 or self.total_units < 20:
@@ -618,10 +612,10 @@ class ContainerPacker:
 
     @staticmethod
     def _column_support_sequence(counts, orientations):
-        """把一个列模式展开为自下而上的货物序列，并预检相邻支撑。
+        """把一个列模式展开为自下而上的货物序列。
 
-        列内货物居中放置；按投影面积由大到小排列可形成稳定底座。对于投影
-        不完全嵌套的矩形，仍严格执行与正式内核相同的 60% 支撑阈值。
+        列内货物居中放置，上下底面中心重合，天然满足重心支撑规则；
+        按投影面积由大到小排列，形成稳定底座。
         """
         sequence = []
         for group_index, quantity in enumerate(counts):
@@ -632,17 +626,13 @@ class ContainerPacker:
             item[1][0] * item[1][1],
             min(item[1][0], item[1][1]),
             max(item[1][0], item[1][1])), reverse=True)
-        for (_, below), (_, above) in zip(sequence, sequence[1:]):
-            overlap = min(below[0], above[0]) * min(below[1], above[1])
-            if overlap * 5 < above[0] * above[1] * 3:
-                return None
         return sequence
 
     def _column_patterns_for_cell(self, cell_length, cell_width, groups,
                                   rng_seed=20260719):
         """用多目标有界背包生成一组互补的竖向列模式。
 
-        每种模式都受柜高、合法旋转和 60% 支撑约束。除体积最密实模式外，
+        每种模式都受柜高、合法旋转和重心支撑约束。除体积最密实模式外，
         还保留单类、稀缺类优先和随机扰动模式，供后续束搜索避免局部最优。
         """
         height_limit = self.container[2]
@@ -1188,7 +1178,7 @@ class ContainerPacker:
                 z += height
 
         # 低高度/大接触面朝向优先，适合利用密集列形成的平整顶面。所有位置仍由
-        # can_place 复核边界、碰撞和 60% 支撑，不引入任何样例专用几何假设。
+        # can_place 复核边界、碰撞和重心支撑，不引入任何样例专用几何假设。
         for io in remainder_units:
             l, w, h = self.boxes[io][:3]
             orientations = self._allowed(io, sorted_orientations(l, w, h))
@@ -1288,6 +1278,71 @@ class ContainerPacker:
                         if candidate[0] == total:
                             return candidate
         return None if best is None else best[1]
+
+    # ---------------- 块构建束搜索（block_engine） ---------------- #
+    def _block_kinds(self):
+        """按允许朝向合并几何相同的类别；每类的件按「下沉键」从大到小排，重货先放。"""
+        grouped = {}
+        for l, w, h, quantity, weight, box_type, io in self.boxes:
+            if quantity <= 0:
+                continue
+            orientations = tuple(self._allowed(io, sorted_orientations(l, w, h)))
+            grouped.setdefault(orientations, []).extend([io] * quantity)
+        kinds = []
+        for orientations, units in grouped.items():
+            units.sort(key=lambda io: -self._sink_key(self.boxes[io]))
+            kinds.append((list(orientations), units))
+        return kinds
+
+    def _materialize_blocks(self, placements, kinds):
+        """把块的放置记录展开成逐箱坐标，并由正式几何内核逐件复核。"""
+        queues = [list(units) for _, units in kinds]
+        cursor = [0] * len(kinds)
+        self._reset_state()
+        type_count = Counter()
+        used_volume, sink_score = 0, 0.0
+        container_height = self.container[2]
+        for x, y, z, a, b, c, nx, ny, nz, kind in placements:
+            for kz in range(nz):
+                for ix in range(nx):
+                    for jy in range(ny):
+                        io = queues[kind][cursor[kind]]
+                        cursor[kind] += 1
+                        position = (x + ix * a, y + jy * b, z + kz * c, a, b, c)
+                        l, w, h, quantity, weight, box_type, _ = self.boxes[io]
+                        if not self.can_place(*position, weight):
+                            return None
+                        self._place(*position)
+                        type_count[box_type] += 1
+                        self.box_colors.append({
+                            'number': len(self.box_colors) + 1,
+                            'type': box_type,
+                            'type_count': type_count[box_type],
+                            'weight': weight,
+                            'input_order': io,
+                            'original_dimensions': (l / MM, w / MM, h / MM),
+                            'desc': self.descriptions.get(io, ''),
+                        })
+                        used_volume += a * b * c
+                        sink_score += self._sink_key(self.boxes[io]) * (container_height - position[2])
+        return (len(self.packing_plan), used_volume, sink_score,
+                list(self.packing_plan), [dict(info) for info in self.box_colors])
+
+    def _block_candidate(self, deadline=None):
+        """块构建候选：deadline 为空时只做一次贪心（标准版），否则束搜索到 deadline（增强版）。
+
+        返回 (候选解, 统计)；候选解格式与其他直接生成的策略一致。
+        """
+        kinds = self._block_kinds()
+        if not kinds:
+            return None, {}
+        search = BlockSearch(self.container, [(orientations, len(units)) for orientations, units in kinds])
+        best = search.greedy()
+        width = 0
+        if deadline is not None and time.time() < deadline:
+            best, width = search.beam_search(deadline, best)
+        candidate = self._materialize_blocks(best.placements(), kinds)
+        return candidate, {'evaluations': search.evaluations, 'beam_width': width}
 
     # ---------------- 单个策略的装箱 ---------------- #
     def _run_policy(self, ordered_types, orient_map, record=True):
@@ -1416,27 +1471,35 @@ class ContainerPacker:
 
     # ---------------- 对外：标准版 ---------------- #
     def pack(self):
-        """标准版：确定性策略组合（长宽两种朝向 × 多种排序），取装载体积最大者。
+        """标准版：块构建贪心 与 原有确定性逐箱策略（长宽两种朝向 × 多种排序）取更优者。
 
-        对坐标轴顺序与排序方式做穷举，避免单一贪心因朝向/顺序不巧而崩坏。
+        块构建通常更紧密；原有策略作为下界保留，因此结果不会差于其中任何一种。
         返回 (是否全部装入, 说明)。
         """
         total = self.total_units
         if self.bottom_metric == 'manual':
             return self._pack_manual(total)  # 手动模式：严格按用户优先级摆放
+        block, _ = self._block_candidate()
         best_fit, best = None, None
-        for swap in (False, True):
-            for pol in self._deterministic_policies():
-                _, placed, used, sink = self._solve(swap, pol[0], pol[1], record=False)
-                # 适应度：体积优先，其次件数，最后用底层得分做同分排序（软偏好）
-                fit = (used, placed, sink)
-                if best_fit is None or fit > best_fit:
-                    best_fit, best = fit, (swap, pol)
-                if placed == total:
-                    break  # 已满载即提前结束（底层优先策略排在最前，会被优先尝试）
-            if best_fit[1] == total:
-                break
-        _, placed, used, sink = self._solve(best[0], best[1][0], best[1][1], record=True)
+        if block is not None:
+            best_fit = self._candidate_fit(block)
+        if best_fit is None or best_fit[1] < total:
+            for swap in (False, True):
+                for pol in self._deterministic_policies():
+                    _, placed, used, sink = self._solve(swap, pol[0], pol[1], record=False)
+                    # 适应度：体积优先，其次件数，最后用底层得分做同分排序（软偏好）
+                    fit = (used, placed, sink)
+                    if best_fit is None or fit > best_fit:
+                        best_fit, best = fit, (swap, pol)
+                    if placed == total:
+                        break  # 已满载即提前结束（底层优先策略排在最前，会被优先尝试）
+                if best_fit[1] == total:
+                    break
+        if best is None:
+            self._restore_plan(block[3], block[4])
+            placed, used = block[0], block[1]
+        else:
+            _, placed, used, sink = self._solve(best[0], best[1][0], best[1][1], record=True)
         if placed == total:
             return True, "成功"
         return False, (f"已尽最大努力装载：装入 {placed}/{total} 件，"
@@ -1462,10 +1525,10 @@ class ContainerPacker:
         return False, (f"已按您设定的优先级尽力装载：装入 {placed}/{total} 件，"
                        f"空间利用率 {used / self.container_volume * 100:.1f}%（其余货物放不下）")
 
-    # ---------------- 对外：增强版（列模式 / MaxRects / 束搜索 / 遗传搜索） ---------------- #
+    # ---------------- 对外：增强版（块构建束搜索 / 列模式 / MaxRects / 遗传搜索） ---------------- #
     def pack_enhanced(self, time_budget=600.0, rng_seed=20260719,
                       population=24, verbose=True):
-        """增强版：列模式束搜索 + MaxRects + 遗传/随机重启，保证不劣于标准版。
+        """增强版：块构建束搜索为主，列模式、MaxRects 与遗传搜索为辅，保证不劣于标准版。
 
         time_budget: 搜索时间上限（秒）；全部货物装入后会提前结束。
         返回 (是否装入, 说明, 统计信息 dict)。
@@ -1518,17 +1581,28 @@ class ContainerPacker:
         def complete():
             return best_fit is not None and best_fit[1] >= total
 
+        beam_info = {}
+        # --- 块构建贪心：通常已很紧密，耗时极少，先作为起点。---
+        block, info = self._block_candidate()
+        evals += info.get('evaluations', 0)
+        consider_direct(block, 'block_greedy')
+
         # 短预算沿用原有顺序，避免兼容策略因标准种子耗时而失去完整搜索窗口。
-        if (time_budget < 30
+        if (time_budget < 30 and not complete()
                 and any(not self.no_flip.get(box[6]) for box in self.boxes)):
             layered = self._layer_column_candidate(
                 deadline=t0 + time_budget, rng_seed=rng_seed)
             consider_direct(layered, 'layer_columns')
 
-        # 长预算优先运行列模式束搜索；若它直接装完，已达到该清单可实现的
-        # 最大体积，无需再消耗时间。未装完时仍会评估标准版作为精英下界。
+        # --- 块构建束搜索：主力搜索，占预算前 55%；束宽逐轮加倍，时间越长结果越好。---
+        if not complete() and time.time() - t0 < time_budget * 0.55:
+            beam, beam_info = self._block_candidate(deadline=t0 + time_budget * 0.55)
+            evals += beam_info.get('evaluations', 0)
+            consider_direct(beam, 'block_beam_search')
+
+        # 列模式束搜索擅长「少种类、高重复」的清单；若它直接装完即可结束。
         if time_budget >= 30 and not complete():
-            beam_share = 0.72
+            beam_share = 0.7
             column_beam = self._column_beam_candidate(
                 deadline=t0 + time_budget * beam_share,
                 rng_seed=rng_seed, beam_width=420)
@@ -1547,15 +1621,15 @@ class ContainerPacker:
 
         # --- 旧的列底座 + 顶层续装仍作为互补精英策略保留。---
         if (not complete() and time_budget >= 30
-                and time.time() - t0 < time_budget
+                and time.time() - t0 < time_budget * 0.85
                 and any(not self.no_flip.get(box[6]) for box in self.boxes)):
             layered = self._layer_column_candidate(
-                deadline=t0 + time_budget, rng_seed=rng_seed)
+                deadline=t0 + time_budget * 0.85, rng_seed=rng_seed)
             consider_direct(layered, 'layer_columns')
 
         # --- 禁止倒放且高重复的专用列生成策略。---
-        if not complete() and time.time() - t0 < time_budget:
-            dense = self._dense_column_candidate(deadline=t0 + time_budget,
+        if not complete() and time.time() - t0 < time_budget * 0.85:
+            dense = self._dense_column_candidate(deadline=t0 + time_budget * 0.85,
                                                  rng_seed=rng_seed)
             consider_direct(dense, 'dense_columns')
 
@@ -1631,6 +1705,7 @@ class ContainerPacker:
             'seconds': round(time.time() - t0, 1),
             'optimal_full': placed == total,
             'strategy': best_strategy or 'extreme_point_search',
+            'beam_width': beam_info.get('beam_width', 0),
         }
         if verbose:
             print(f"  [增强版] 评估 {evals} 个方案，用时 {stats['seconds']}s，"

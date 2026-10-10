@@ -315,13 +315,15 @@ def run_packing(container, boxes, threshold, mode, budget,
 
 def baseline_note(container, boxes, threshold, constrained_placed):
     """当启用了「禁止倒放/底层优先」等约束、且未能全部装入时，
-    对照「不加任何约束」的原始方案能装多少件，据实提示用户约束的代价（需求5）。"""
+    对照「不加任何约束」的方案能装多少件，据实提示用户约束的代价（需求5）。
+
+    对照只用块构建贪心（通常不到一秒），避免在计算时限之外再耗时完整求解一遍。"""
     base = ContainerPacker(container, boxes, threshold)  # 无约束，纯空间利用率
-    base.pack()
-    base_placed = len(base.packing_plan)
+    candidate, _ = base._block_candidate()
+    base_placed = candidate[0] if candidate else 0
     if base_placed > constrained_placed:
         return (f"提示：受「禁止倒放 / 底层优先」限制，本方案装入 {constrained_placed} 件；"
-                f"若取消这些限制，原始方案最多可装 {base_placed} 件。"
+                f"若取消这些限制，至少可装 {base_placed} 件。"
                 f"已在保留您所选限制的前提下尽力装载——如需装下更多，可放宽限制。")
     return None
 

@@ -13,7 +13,7 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY requirements-server.txt .
 RUN pip install --index-url "${PIP_INDEX_URL}" -r requirements-server.txt
 
-COPY packer_pro.py planner_core.py ./
+COPY packer_pro.py planner_core.py block_engine.py ./
 COPY server/ server/
 COPY web/ web/
 
