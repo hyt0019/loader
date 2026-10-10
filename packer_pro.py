@@ -18,9 +18,6 @@
 ================================================================
 """
 
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from matplotlib.patches import Patch
 import numpy as np
 from itertools import permutations
 from decimal import Decimal
@@ -31,12 +28,22 @@ import os
 import hashlib
 import random
 import time
-import matplotlib
 
-try:
-    matplotlib.use('TkAgg')  # 桌面交互式后端
-except Exception:
-    pass  # 无图形环境(网页后端/服务器)时退回默认后端，不影响网页版使用
+_plt = None
+
+
+def _pyplot():
+    """桌面可视化才加载 Matplotlib；网页后端与计算子进程不需要它，启动更快、更省内存。"""
+    global _plt
+    if _plt is None:
+        import matplotlib
+        try:
+            matplotlib.use('TkAgg')  # 桌面交互式后端
+        except Exception:
+            pass  # 无图形环境时退回默认后端
+        import matplotlib.pyplot as plt
+        _plt = plt
+    return _plt
 
 MM = 1000  # 米 -> 毫米
 
@@ -1648,6 +1655,9 @@ class ContainerPacker:
         self.visualize()
 
     def visualize(self):
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        from matplotlib.patches import Patch
+        plt = _pyplot()
         plt.clf()
         fig = plt.figure(1, figsize=(13, 8))
         ax = fig.add_subplot(111, projection='3d')
@@ -1669,13 +1679,16 @@ class ContainerPacker:
             ax.text(x / MM + l / (2 * MM), y / MM + w / (2 * MM), z / MM + h / (2 * MM),
                     str(info['number']), color='black', fontsize=10, ha='center', va='center')
         if legend_info:
+            placed = Counter(info['input_order'] for info in self.box_colors)
             handles = []
             for category in sorted(legend_info):
                 color, info = legend_info[category]
                 dl, dw, dh = info['original_dimensions']
-                qty = self.boxes[info['input_order']][3]
+                # 图例数量为本方案实际装入的件数，未装满时附上应装总数
+                packed, total = placed[info['input_order']], self.boxes[info['input_order']][3]
+                qty = f"{packed}" if packed >= total else f"{packed}/{total}"
                 handles.append(Patch(facecolor=color, edgecolor='black',
-                                     label=f"Cat {category}: {dl:g} x {dw:g} x {dh:g} m  type {info['type']}  qty={qty}"))
+                                     label=f"Cat {category}: {dl:g} x {dw:g} x {dh:g} m  type {info['type']}  packed={qty}"))
             ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(0.0, 1.0),
                       fontsize=9, framealpha=0.9, title='Highlighted categories (L x W x H)')
         ax.view_init(elev=20, azim=45)
@@ -1789,6 +1802,7 @@ def print_plan(packer, sort_by_input_order=True):
 
 
 def interactive_loop(packer):
+    plt = _pyplot()
     packer.visualize()
     plt.ion()
     while True:
