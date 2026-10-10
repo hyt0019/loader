@@ -466,7 +466,10 @@ def build_figure(packer, highlight_categories=None, region=None,
             base += 8
         if not vx:
             continue  # 该类别在当前层高下无可显示的箱子
-        qty = packer.boxes[io][3]
+        # 图例数量取本方案实际装入的件数；未全部装入时附上应装总数，避免与清单数量混淆
+        placed = len(cats[io])
+        total = packer.boxes[io][3]
+        qty_label = f"已装{placed}件" if placed >= total else f"已装{placed}/{total}件"
         dl, dw, dh = cats[io][0][1]['original_dimensions']
         tlabel = TYPE_LABELS.get(str(cats[io][0][1]['type']), str(cats[io][0][1]['type']))
         desc = str(cats[io][0][1].get('desc', '')).strip()
@@ -478,7 +481,7 @@ def build_figure(packer, highlight_categories=None, region=None,
             lighting=dict(ambient=0.62, diffuse=0.88, specular=0.12,
                           roughness=0.55, fresnel=0.1),
             lightposition=dict(x=1000, y=-1200, z=2000),
-            name=f"{lead}: {dl:g}×{dw:g}×{dh:g}m ({tlabel}, {qty}件)",
+            name=f"{lead}: {dl:g}×{dw:g}×{dh:g}m ({tlabel}, {qty_label})",
             showlegend=True, hoverinfo='text',
             hovertext=[t for t in htext for _ in range(8)],
         ))
