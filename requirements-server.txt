@@ -1,0 +1,10 @@
+# 网站后端（server/）运行依赖，版本已锁定为测试通过的组合。
+# 本地运行：pip install -r requirements-server.txt && python -m uvicorn server.main:app --port 8000
+fastapi==0.143.0
+starlette==1.7.0
+pydantic==2.14.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+numpy==2.5.3
+pandas==3.0.6
+openpyxl==3.1.5
