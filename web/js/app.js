@@ -1,5 +1,6 @@
 // HYT Container Load Planner —— 网页主逻辑。
-// 输入（集装箱、清单、参数）与最近一次结果自动保存在浏览器 localStorage 中，刷新不丢失。
+// 输入（集装箱、清单、参数）与最近一次结果自动保存在浏览器 localStorage 中，刷新不丢失；
+// 恢复出的旧结果会标明是上次的结果，开始新计算时旧结果立即撤下。
 import { cancelOnUnload, downloadFrom, getJSON, postForm, postJSON, saveBlob } from './api.js';
 import { categoryColor, computeEstimate, escapeHtml, fixed, g, isValidRow, typeLabel } from './format.js';
 import { PlanViewer } from './viewer3d.js';
@@ -27,6 +28,7 @@ const state = {
   highlight: new Set(),
   region: null,
   job: null,
+  restored: false,           // 当前显示的结果是否是上次打开网页时留下的
   skipDeleteConfirm: false,  // 「本次使用不再提示删除确认」，仅在当前页面有效
 };
 let nextRowId = 1;
@@ -69,7 +71,10 @@ function restoreState() {
       if (Array.isArray(saved.rows)) state.rows = saved.rows.map(newRow);
     }
     const result = JSON.parse(localStorage.getItem(RESULT_KEY) || 'null');
-    if (result && result.plan && Array.isArray(result.plan.packing_plan)) state.result = result;
+    if (result && result.plan && Array.isArray(result.plan.packing_plan)) {
+      state.result = result;
+      state.restored = true;
+    }
   } catch { /* 存储内容损坏时从空白开始 */ }
 }
 
@@ -373,7 +378,9 @@ async function startCompute() {
   renderJob({ status: 'queued', mode: body.mode, budget: body.budget, position: 0 });
   try {
     const snap = await postJSON('/api/jobs', body);
+    // 新任务已受理：旧结果作废，避免计算过程中被误当成本次结果
     state.job = { id: snap.id, failures: 0, timer: 0 };
+    clearResult();
     handleSnapshot(snap);
   } catch (err) {
     setComputing(false);
@@ -415,7 +422,7 @@ function handleSnapshot(snap) {
   }
   finishJob();
   if (snap.status === 'done') {
-    const result = { ...snap.result, elapsed: snap.elapsed };
+    const result = { ...snap.result, elapsed: snap.elapsed, computed_at: Date.now() };
     applyResult(result);
     saveResult();
     toast(result.fits ? '计算完成，全部货物已装入。' : '计算完成，部分货物未能装入。');
@@ -453,12 +460,12 @@ function setComputing(on) {
   $('#calc-card').hidden = !on;
   $('#btn-compute').disabled = on;
   $('#btn-load-plan').disabled = on;
+  // 计算进行中不显示任何旧结果
+  $('#result-area').hidden = on || !state.result;
+  $('#empty-hint').hidden = on || !!state.result;
   if (on) {
-    $('#empty-hint').hidden = true;
     $('#calc-bar').style.width = '0';
     $('#calc-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  } else {
-    $('#empty-hint').hidden = !!state.result;
   }
 }
 
@@ -491,8 +498,17 @@ function categoryInfo(plan) {
   }));
 }
 
-function applyResult(result) {
+function clearResult() {
+  state.result = null;
+  state.restored = false;
+  saveResult();
+  $('#result-area').hidden = true;
+  $('#empty-hint').hidden = !!state.job;
+}
+
+function applyResult(result, { restored = false } = {}) {
   state.result = result;
+  state.restored = restored;
   const cats = categoryInfo(result.plan);
   state.highlight = new Set(cats.map((c) => c.category));
   $('#result-area').hidden = false;
@@ -507,10 +523,22 @@ function applyResult(result) {
   buildRanges();
 }
 
+function formatTime(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, '0');
+  const day = `${d.getMonth() + 1}月${d.getDate()}日`;
+  const year = d.getFullYear() === new Date().getFullYear() ? '' : `${d.getFullYear()}年`;
+  return `${year}${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function renderShipCaption() {
+  const { computed_at: at } = state.result || {};
+  const parts = [];
+  if (state.shipNo) parts.push(`发货单号：${state.shipNo}`);
+  if (at) parts.push(`计算时间：${formatTime(at)}`);
   const el = $('#result-ship');
-  el.hidden = !state.shipNo;
-  el.textContent = state.shipNo ? `发货单号：${state.shipNo}` : '';
+  el.hidden = !parts.length;
+  el.textContent = parts.join('　·　');
 }
 
 function renderOverview() {
@@ -525,6 +553,12 @@ function renderOverview() {
     + metricHtml('是否全部装入', fits ? '是' : '否', fits ? 'good' : 'bad')
     + last;
   const alerts = [];
+  if (state.restored) {
+    const at = state.result.computed_at;
+    alerts.push(`<div class="alert info stale">
+      <span>这是上次${at ? `（${escapeHtml(formatTime(at))}）` : ''}留下的结果，不是本次新算的；修改清单后请重新点击「开始计算」。</span>
+      <button type="button" class="btn small" data-act="clear-result">清除此结果</button></div>`);
+  }
   if (!fits) {
     const why = msg || `装入 ${stats.placed}/${stats.total} 件`;
     alerts.push(`<div class="alert warn">未能全部装入：${escapeHtml(why)}</div>`);
@@ -824,6 +858,9 @@ function bindActions() {
       $('#tab-detail').hidden = tab.dataset.tab !== 'detail';
     });
   }
+  $('#result-alerts').addEventListener('click', (e) => {
+    if (e.target.closest('[data-act="clear-result"]')) clearResult();
+  });
   $('#btn-dl-xlsx').addEventListener('click', downloadPlanXlsx);
   $('#btn-dl-json').addEventListener('click', downloadPlanJson);
 
@@ -849,7 +886,7 @@ async function init() {
     $('.viewer-toolbar').hidden = true;
   }
   if (state.result) {
-    try { applyResult(state.result); } catch { state.result = null; saveResult(); $('#result-area').hidden = true; }
+    try { applyResult(state.result, { restored: true }); } catch { clearResult(); }
   }
 
   try {
