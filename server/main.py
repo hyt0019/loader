@@ -27,8 +27,8 @@ from starlette.middleware.gzip import GZipMiddleware
 from packer_pro import MM, to_mm
 from planner_core import (CARGO_TYPES, CONTAINER_PRESETS, SAMPLE_CARGO, SAMPLE_CONTAINER,
                           TYPE_LABELS, build_cargo_txt, build_cargo_xlsx, build_excel_bytes,
-                          build_json_bytes, load_plan_into_packer, load_saved_plan, parse_txt,
-                          parse_xlsx, saved_plan_form_data)
+                          build_json_bytes, load_plan_into_packer, load_saved_plan,
+                          parse_cargo_xlsx, parse_txt, saved_plan_form_data)
 from server.jobs import JobManager, JobRejected
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,6 +108,7 @@ class CargoRow(BaseModel):
     no_flip: bool = False
     prio: float = Field(0.0, ge=-1_000_000, le=1_000_000)
     desc: str = Field('', max_length=200)
+    no_stack: bool = False  # 不可压：顶上不能放任何货物
 
     @field_validator('type')
     @classmethod
@@ -135,6 +136,7 @@ class JobRequest(CargoList):
     mode: Literal['standard', 'enhanced'] = 'standard'
     budget: float = Field(600.0, ge=10, le=600)
     bottom_metric: Literal['none', 'weight', 'volumetric', 'manual'] = 'none'
+    strict_stack: bool = False  # 严格执行底层优先指标（仅按重量 / 按密度时生效）
     threshold: float = Field(100.0, ge=0, le=1_000_000)
 
 
@@ -147,9 +149,10 @@ class PlanExport(BaseModel):
 # --------------------------------------------------------------------------- #
 #                                 工具函数                                     #
 # --------------------------------------------------------------------------- #
-def _rows_from_boxes(boxes, descriptions=None, no_flip=None, priority=None):
+def _rows_from_boxes(boxes, descriptions=None, no_flip=None, priority=None, no_stack=None):
     """内部 boxes(mm) -> 网页货物行(米、中文类型)。"""
     descriptions, no_flip, priority = descriptions or [], no_flip or [], priority or []
+    no_stack = no_stack or []
     rows = []
     for i, (l, w, h, n, weight, t) in enumerate(boxes):
         rows.append({
@@ -158,6 +161,7 @@ def _rows_from_boxes(boxes, descriptions=None, no_flip=None, priority=None):
             'no_flip': bool(no_flip[i]) if i < len(no_flip) else False,
             'prio': float(priority[i]) if i < len(priority) else 0.0,
             'desc': str(descriptions[i]) if i < len(descriptions) else '',
+            'no_stack': bool(no_stack[i]) if i < len(no_stack) else False,
         })
     return rows
 
@@ -208,7 +212,7 @@ async def health():
 @app.get('/api/config')
 async def config():
     sample_rows = [{'l': l, 'w': w, 'h': h, 'n': n, 'wt': wt, 'type': t,
-                    'no_flip': nf, 'prio': prio, 'desc': desc}
+                    'no_flip': nf, 'prio': prio, 'desc': desc, 'no_stack': False}
                    for (l, w, h, n, wt, t, nf, prio, desc) in SAMPLE_CARGO]
     return {
         'presets': {name: list(dims) for name, dims in CONTAINER_PRESETS.items()},
@@ -236,6 +240,7 @@ async def create_job(req: JobRequest, request: Request):
         'mode': req.mode,
         'budget': min(req.budget, MAX_BUDGET),
         'bottom_metric': req.bottom_metric,
+        'strict_stack': req.strict_stack and req.bottom_metric in ('weight', 'volumetric'),
         'threshold': req.threshold,
     }
     client = request.client.host if request.client else 'unknown'
@@ -264,7 +269,7 @@ async def cancel_job(job_id: str):
 
 @app.post('/api/cargo/import')
 async def import_cargo(file: Optional[UploadFile] = File(None), text: Optional[str] = Form(None)):
-    no_flip = priority = None
+    no_flip = priority = no_stack = None
     try:
         if file is not None and file.filename:
             content = await _read_upload(file)
@@ -272,8 +277,10 @@ async def import_cargo(file: Optional[UploadFile] = File(None), text: Optional[s
             if name.endswith('.txt'):
                 container, boxes, ship_no, descriptions = parse_txt(_decode_text(content))
             elif name.endswith('.xlsx'):
-                (container, boxes, ship_no, descriptions,
-                 no_flip, priority) = parse_xlsx(io.BytesIO(content))
+                data = parse_cargo_xlsx(io.BytesIO(content))
+                container, boxes, ship_no = data['container'], data['boxes'], data['ship_no']
+                descriptions, no_flip = data['descriptions'], data['no_flip']
+                priority, no_stack = data['priority'], data['no_stack']
             else:
                 raise HTTPException(400, '仅支持 txt 或 xlsx 文件')
         elif text and text.strip():
@@ -287,7 +294,7 @@ async def import_cargo(file: Optional[UploadFile] = File(None), text: Optional[s
     return {
         'container': [c / MM for c in container],
         'ship_no': ship_no,
-        'rows': _rows_from_boxes(boxes, descriptions, no_flip, priority),
+        'rows': _rows_from_boxes(boxes, descriptions, no_flip, priority, no_stack),
     }
 
 
@@ -316,7 +323,7 @@ async def import_plan(file: UploadFile = File(...)):
         'container': [c / MM for c in form['container']],
         'ship_no': form['ship_no'],
         'rows': _rows_from_boxes(form['boxes'], form['descriptions'],
-                                 form['no_flip'], form['priority']),
+                                 form['no_flip'], form['priority'], form['no_stack']),
         'result': {'plan': plan_json, 'stats': stats,
                    'fits': stats['placed'] == stats['total'],
                    'msg': '', 'note': None, 'mode': 'imported'},

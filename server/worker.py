@@ -3,7 +3,8 @@
 import json
 
 from packer_pro import to_mm
-from planner_core import baseline_note, build_json_bytes, rows_to_boxes_ex, run_packing
+from planner_core import (baseline_note, build_json_bytes, constraint_labels, rows_to_boxes_full,
+                          run_packing)
 
 
 def compute_plan(params):
@@ -12,18 +13,20 @@ def compute_plan(params):
     结果中的 ``plan`` 与「下载 JSON 方案」的格式完全一致，可原样导出、再导入。
     """
     container = tuple(to_mm(value) for value in params['container'])
-    boxes, no_flip, priority, descriptions = rows_to_boxes_ex(params['rows'])
+    boxes, no_flip, priority, descriptions, no_stack = rows_to_boxes_full(params['rows'])
     mode = params['mode']
     bottom_metric = params['bottom_metric']
+    strict_stack = bool(params.get('strict_stack'))
     threshold = params['threshold']
     packer, fits, msg, stats = run_packing(
         container, boxes, threshold, mode, params['budget'],
         no_flip=no_flip, priority=priority, bottom_metric=bottom_metric,
-        descriptions=descriptions)
+        descriptions=descriptions, no_stack=no_stack, strict_stack=strict_stack)
     note = None
     # 约束导致装不满时，对照无约束方案并提示代价
-    if not fits and (any(no_flip) or bottom_metric != 'none'):
-        note = baseline_note(container, boxes, threshold, stats['placed'])
+    labels = constraint_labels(no_flip, bottom_metric, no_stack, strict_stack)
+    if not fits and labels:
+        note = baseline_note(container, boxes, threshold, stats['placed'], labels)
     plan = json.loads(build_json_bytes(packer, params.get('ship_no', '')))
     return {'plan': plan, 'stats': stats, 'fits': fits, 'msg': msg, 'note': note, 'mode': mode}
 

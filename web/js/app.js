@@ -17,6 +17,7 @@ const state = {
   config: null,
   workmode: 'auto',          // auto | manual
   metric: 'none',            // none | weight | volumetric（自动模式下的底层优先指标）
+  strict: false,             // 严格执行底层优先指标：重 / 密度大的不压在轻 / 密度小的上面
   threshold: 100,
   calcmode: 'standard',      // standard | enhanced
   budget: 600,
@@ -43,7 +44,7 @@ function saveInputs() {
   saveTimer = setTimeout(() => {
     try {
       localStorage.setItem(INPUT_KEY, JSON.stringify({
-        workmode: state.workmode, metric: state.metric, threshold: state.threshold,
+        workmode: state.workmode, metric: state.metric, strict: state.strict, threshold: state.threshold,
         calcmode: state.calcmode, budget: state.budget, shipNo: state.shipNo,
         container: state.container, rows: state.rows.map(stripRow), cargoFmt: state.cargoFmt,
       }));
@@ -64,7 +65,7 @@ function restoreState() {
   try {
     const saved = JSON.parse(localStorage.getItem(INPUT_KEY) || 'null');
     if (saved) {
-      for (const key of ['workmode', 'metric', 'threshold', 'calcmode', 'budget', 'shipNo', 'cargoFmt']) {
+      for (const key of ['workmode', 'metric', 'strict', 'threshold', 'calcmode', 'budget', 'shipNo', 'cargoFmt']) {
         if (saved[key] !== undefined) state[key] = saved[key];
       }
       if (Array.isArray(saved.container) && saved.container.length === 3) state.container = saved.container;
@@ -89,6 +90,7 @@ function newRow(src = {}) {
     n: Math.max(0, Math.round(num(src.n, 1))), wt: num(src.wt, 0),
     type: CARGO_TYPES.includes(typeLabel(src.type)) ? typeLabel(src.type) : '木箱',
     no_flip: !!src.no_flip, prio: Math.round(num(src.prio, 0)), desc: String(src.desc ?? ''),
+    no_stack: !!src.no_stack,
   };
 }
 
@@ -110,6 +112,8 @@ function rowElement(row) {
     <td><select data-k="type" aria-label="类型">${CARGO_TYPES.map((t) => `<option>${t}</option>`).join('')}</select></td>
     <td class="center"><input type="checkbox" data-k="no_flip" aria-label="禁止倒放"
       title="勾选后此类货物不可倒放：落地面固定为长×宽，高只能是原始高度"></td>
+    <td class="center"><input type="checkbox" data-k="no_stack" aria-label="不可压"
+      title="勾选后此类货物顶上不放任何货物，适合带仪表、怕压的设备"></td>
     <td class="col-prio"><input type="number" data-k="prio" step="1" aria-label="优先级" title="数值越大越优先放到底层"></td>
     <td class="center"><button type="button" class="icon-btn" data-act="del" title="删除此行" aria-label="删除此行">${TRASH_SVG}</button></td>`;
   const set = (key, value) => { $(`[data-k="${key}"]`, tr).value = value; };
@@ -119,6 +123,7 @@ function rowElement(row) {
   set('prio', String(row.prio));
   set('type', row.type);
   $('[data-k="no_flip"]', tr).checked = row.no_flip;
+  $('[data-k="no_stack"]', tr).checked = row.no_stack;
   return tr;
 }
 
@@ -145,6 +150,7 @@ function bindCargoTable() {
     if (!row) return;
     if (key === 'desc') row.desc = input.value;
     else if (key === 'no_flip') row.no_flip = input.checked;
+    else if (key === 'no_stack') row.no_stack = input.checked;
     else if (key === 'type') row.type = input.value;
     else {
       const value = input.value === '' ? 0 : Number(input.value);
@@ -235,6 +241,7 @@ function renderParams() {
   $(`input[name="cargo-fmt"][value="${state.cargoFmt}"]`).checked = true;
   $('#m-weight').checked = state.metric === 'weight';
   $('#m-vol').checked = state.metric === 'volumetric';
+  $('#m-strict').checked = state.strict;
   $('#threshold').value = String(state.threshold);
   $('#budget').value = String(state.budget);
   $('#ship-no').value = state.shipNo;
@@ -249,12 +256,32 @@ function renderModeDependent() {
   $('#metric-auto').hidden = manual;
   $('#metric-manual').hidden = !manual;
   $('#metric-none-hint').hidden = state.metric !== 'none';
+  renderStrictOption();
   $('#cargo-table').classList.toggle('show-prio', manual);
   $('#cargo-caption').textContent = manual
-    ? '直接在下表修改数值；勾选「禁止倒放」的货物不会被倒置摆放；「优先级」数值越大越优先放到底层。每行最右侧可删除该行。'
-    : '直接在下表修改数值，类型用下拉选择；勾选「禁止倒放」的货物不会被倒置摆放；每行最右侧可删除该行。';
+    ? '直接在下表修改数值；勾选「禁止倒放」的货物不会被倒置摆放，勾选「不可压」的货物顶上不放其他货物；「优先级」数值越大越优先放到底层。每行最右侧可删除该行。'
+    : '直接在下表修改数值，类型用下拉选择；勾选「禁止倒放」的货物不会被倒置摆放，勾选「不可压」的货物顶上不放其他货物；每行最右侧可删除该行。';
   $('#budget-field').hidden = state.calcmode !== 'enhanced';
   $('#budget-out').textContent = String(state.budget);
+}
+
+const STRICT_TEXT = {
+  weight: ['严格执行：重的不压在轻的上面', '开启后，上层货物的重量不会大于它下面压着的任何一件货；限制越多，可能装得越少。'],
+  volumetric: ['严格执行：密度大的不压在密度小的上面', '开启后，上层货物的密度不会大于它下面压着的任何一件货；限制越多，可能装得越少。'],
+  none: ['严格执行', '先在上面选择一项指标，才能开启严格执行。'],
+};
+
+/** 严格执行只在自动模式下、且选了底层优先指标时可用。 */
+const strictActive = () => state.workmode === 'auto' && state.metric !== 'none' && state.strict;
+
+function renderStrictOption() {
+  const [label, hint] = STRICT_TEXT[state.metric] || STRICT_TEXT.none;
+  const input = $('#m-strict');
+  input.disabled = state.metric === 'none';
+  input.checked = state.strict && !input.disabled;
+  input.closest('.switch').classList.toggle('off', input.disabled);
+  $('#m-strict-text').textContent = label;
+  $('#m-strict-hint').textContent = hint;
 }
 
 function bindParams() {
@@ -274,6 +301,10 @@ function bindParams() {
     state.metric = e.target.checked ? 'volumetric' : 'none';
     $('#m-weight').checked = false;
     renderModeDependent(); renderEstimate(); saveInputs();
+  });
+  $('#m-strict').addEventListener('change', (e) => {
+    state.strict = e.target.checked;
+    renderEstimate(); saveInputs();
   });
   $('#threshold').addEventListener('input', (e) => {
     const v = Number(e.target.value);
@@ -320,10 +351,19 @@ function renderEstimate() {
     alerts.push(`<div class="alert warn">有 ${est.oversized} 类货物任意摆放都超过集装箱内尺寸，无法装入。</div>`);
   }
   if (est.heavy) {
-    const how = state.workmode === 'auto' && state.metric === 'weight'
-      ? '已启用「按重量优先」，将优先放到底层（实在放不下时仍允许叠放）。'
-      : '如需让重货优先压在底层，可开启「按重量优先」。';
+    let how = '如需让重货优先压在底层，可开启「按重量优先」。';
+    if (state.workmode === 'auto' && state.metric === 'weight') {
+      how = strictActive()
+        ? '已启用「按重量优先」并严格执行：重的不会压在轻的上面。'
+        : '已启用「按重量优先」，将优先放到底层（实在放不下时仍允许叠放）。';
+    }
     alerts.push(`<div class="alert info">有 ${est.heavy} 类为重货（&gt;${g(state.threshold)} kg）。${how}</div>`);
+  }
+  if (strictActive()) {
+    const noWeight = state.rows.filter((r) => isValidRow(r) && !(Number(r.wt) > 0)).length;
+    if (noWeight) {
+      alerts.push(`<div class="alert warn">已开启严格执行，但有 ${noWeight} 类货物未填重量，它们不参与${state.metric === 'weight' ? '重量' : '密度'}比较。</div>`);
+    }
   }
   $('#estimate-alerts').innerHTML = alerts.join('');
 }
@@ -372,6 +412,7 @@ async function startCompute() {
     mode: state.calcmode,
     budget: state.budget,
     bottom_metric: state.workmode === 'manual' ? 'manual' : state.metric,
+    strict_stack: strictActive(),
     threshold: state.threshold,
   };
   setComputing(true);
@@ -531,11 +572,25 @@ function formatTime(ms) {
   return `${year}${day} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const STACK_RULE_TEXT = { weight: '重的不压轻的', volumetric: '密度大的不压密度小的' };
+
+/** 结果所用的叠放规则说明（来自方案本身，导入的旧方案没有这些字段）。 */
+function stackRuleText(plan) {
+  const parts = [];
+  const strict = STACK_RULE_TEXT[plan.strict_stack];
+  if (strict) parts.push(`严格执行（${strict}）`);
+  const noStack = (plan.boxes || []).filter((box) => box[9]).length;
+  if (noStack) parts.push(`${noStack} 类不可压`);
+  return parts.join('，');
+}
+
 function renderShipCaption() {
-  const { computed_at: at } = state.result || {};
+  const { computed_at: at, plan } = state.result || {};
   const parts = [];
   if (state.shipNo) parts.push(`发货单号：${state.shipNo}`);
   if (at) parts.push(`计算时间：${formatTime(at)}`);
+  const rule = plan ? stackRuleText(plan) : '';
+  if (rule) parts.push(`叠放规则：${rule}`);
   const el = $('#result-ship');
   el.hidden = !parts.length;
   el.textContent = parts.join('　·　');

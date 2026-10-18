@@ -32,7 +32,7 @@ import hashlib
 import random
 import time
 
-from block_engine import BlockSearch, center_supported
+from block_engine import FREE_STACK, BlockSearch, can_stack, center_supported, stack_rank
 
 _plt = None
 
@@ -173,7 +173,8 @@ def _maxrects_pack(container_xy, rectangles, mode='compact'):
 # --------------------------------------------------------------------------- #
 class ContainerPacker:
     def __init__(self, container, boxes, weight_threshold=100,
-                 no_flip=None, priority=None, bottom_metric='none', descriptions=None):
+                 no_flip=None, priority=None, bottom_metric='none', descriptions=None,
+                 no_stack=None, strict_stack=False):
         """三维装箱器。
 
         新增参数：
@@ -188,6 +189,9 @@ class ContainerPacker:
                          'volumetric'  —— 体积重(密度=重量/体积)大的优先放底层
                          'manual'      —— 按 priority 手动优先级放底层
           descriptions:  每类货物的「零件描述/品名」。可为 list 或 dict{io: str}，仅用于展示与导出。
+          no_stack:      每类货物是否「不可压」：顶上不能放任何货物。可为 list 或 dict{io: bool}。
+          strict_stack:  严格执行底层优先指标（仅 'weight' / 'volumetric' 时生效）：上层货物的
+                         重量或密度不得大于它直接压着的任何一件货物；未填重量的货物不参与比较。
         """
         self.container = tuple(int(x) for x in container)
         self.boxes = [
@@ -201,6 +205,11 @@ class ContainerPacker:
             descriptions, lambda v: '' if v is None else str(v), '')
         self.bottom_metric = bottom_metric if bottom_metric in (
             'none', 'weight', 'volumetric', 'manual') else 'none'
+        self.no_stack = self._normalize_flags(no_stack, bool, False)
+        self.strict_stack = bool(strict_stack) and self.bottom_metric in ('weight', 'volumetric')
+        # 叠放属性 (比较值或 None, 不可压)；没有任何叠放限制时不做额外判断
+        self.stack_attrs = {box[6]: self._stack_attr(box) for box in self.boxes}
+        self.stack_rules = any(attr != FREE_STACK for attr in self.stack_attrs.values())
         self.container_volume = self.container[0] * self.container[1] * self.container[2]
         self.total_units = sum(b[3] for b in self.boxes)
         self.cell = max(1, min(self.container) // 15) if self.container and min(self.container) else 1
@@ -214,6 +223,8 @@ class ContainerPacker:
         self.occupied = []
         self.grid = defaultdict(list)
         self.top_map = defaultdict(list)
+        self.top_attrs = defaultdict(list)    # 与 top_map 对齐的叠放属性（仅启用叠放规则时记录）
+        self.bottom_map = defaultdict(list)   # 离地货物的底面 [(矩形, 叠放属性), ...]
         self.points = {(0, 0, 0)}
         self.packing_plan = []
         self.box_colors = []
@@ -262,6 +273,25 @@ class ContainerPacker:
             return self.priority.get(io, 0.0)
         return 0.0
 
+    def _stack_attr(self, box):
+        """叠放属性：(比较值或 None, 不可压)。比较值只在严格执行底层优先指标时使用，
+        未填重量（≤0）的货物没有比较值，不受严格规则限制。"""
+        l, w, h, n, weight, t, io = box
+        value = None
+        if self.strict_stack and weight > 0:
+            value = self._sink_key(box)
+        return (value, bool(self.no_stack.get(io)))
+
+    def _column_order(self, ios):
+        """把同一竖列中的货物按叠放次序（自下而上）稳定排序；违反叠放规则时返回 None。"""
+        if not self.stack_rules:
+            return ios
+        ordered = sorted(ios, key=lambda io: stack_rank(self.stack_attrs[io]))
+        for lower, upper in zip(ordered, ordered[1:]):
+            if not can_stack(self.stack_attrs[upper], self.stack_attrs[lower]):
+                return None
+        return ordered
+
     # ---------------- 空间索引辅助 ---------------- #
     def _cells(self, x, y, z, l, w, h):
         cs = self.cell
@@ -290,7 +320,7 @@ class ContainerPacker:
         return False
 
     # ---------------- 放置可行性 ---------------- #
-    def can_place(self, x, y, z, l, w, h, weight):
+    def can_place(self, x, y, z, l, w, h, weight, io=None):
         if x + l > self.container[0] or y + w > self.container[1] or z + h > self.container[2]:
             return False
         # 说明：重量不再作为「硬约束」阻止叠放。重/密度大的箱子改为通过装箱顺序
@@ -301,14 +331,35 @@ class ContainerPacker:
                     y < oy + ow and y + w > oy and
                     z < oz + oh and z + h > oz):
                 return False
-        return z == 0 or center_supported(x, y, l, w, self.top_map.get(z, ()))
+        if z and not center_supported(x, y, l, w, self.top_map.get(z, ())):
+            return False
+        return not self.stack_rules or self._stack_ok(x, y, z, l, w, h, io)
 
-    def _place(self, x, y, z, l, w, h):
+    def _stack_ok(self, x, y, z, l, w, h, io):
+        """叠放规则：本箱不能压在不允许的货物上，也不能被已有货物以不允许的方式压着
+        （已有货物悬挑部分的底面恰好落在本箱顶面上时，同样算作压在本箱上）。"""
+        attr = self.stack_attrs.get(io, FREE_STACK)
+        xe, ye = x + l, y + w
+        if z:
+            for (x1, y1, x2, y2), lower in zip(self.top_map.get(z, ()), self.top_attrs.get(z, ())):
+                if x1 < xe and x < x2 and y1 < ye and y < y2 and not can_stack(attr, lower):
+                    return False
+        for (x1, y1, x2, y2), upper in self.bottom_map.get(z + h, ()):
+            if x1 < xe and x < x2 and y1 < ye and y < y2 and not can_stack(upper, attr):
+                return False
+        return True
+
+    def _place(self, x, y, z, l, w, h, io=None):
         idx = len(self.occupied)
         box = (x, y, z, l, w, h)
         self.occupied.append(box)
         self.packing_plan.append(box)
         self.top_map[z + h].append((x, y, x + l, y + w))  # 顶面矩形，供支撑判断
+        if self.stack_rules:
+            attr = self.stack_attrs.get(io, FREE_STACK)
+            self.top_attrs[z + h].append(attr)
+            if z:
+                self.bottom_map[z].append(((x, y, x + l, y + w), attr))
         for cell in self._cells(x, y, z, l, w, h):
             self.grid[cell].append(idx)
         if self.points:
@@ -329,7 +380,7 @@ class ContainerPacker:
         """合并几何和运输约束相同的类别，同时保留每件货物的原输入类别。"""
         grouped = defaultdict(list)
         for l, w, h, quantity, weight, box_type, io in self.boxes:
-            key = (min(l, w), max(l, w), h, bool(self.no_flip.get(io)))
+            key = (min(l, w), max(l, w), h, bool(self.no_flip.get(io)), self.stack_attrs[io])
             grouped[key].extend([io] * quantity)
         return [
             {'key': key, 'small': key[0], 'large': key[1], 'height': key[2],
@@ -365,11 +416,19 @@ class ContainerPacker:
                 return
             height = ordered[index]['height']
             limit = min(max_counts[index], remaining_height // height)
+            if ordered[index]['key'][-1][1]:
+                limit = min(limit, 1)  # 不可压：一列中最多一件（且只能在顶上）
             for quantity in range(limit + 1):
                 enumerate_counts(index + 1, remaining_height - quantity * height,
                                  counts + [quantity])
 
         enumerate_counts(0, height_limit, [])
+        if self.stack_rules:
+            def column_ok(counts):
+                units = [ordered[i]['units'][0] for i, quantity in enumerate(counts)
+                         for _ in range(quantity)]
+                return self._column_order(units) is not None
+            patterns = [counts for counts in patterns if column_ok(counts)]
         # 每列优先体积，其次件数；先尝试密实模式可显著减少 DP 分支。
         patterns.sort(key=lambda counts: (
             sum(counts[i] * volumes[i] for i in range(len(counts))),
@@ -416,6 +475,9 @@ class ContainerPacker:
                 expanded.extend([original_index] * quantity)
             expanded.sort(key=lambda i: (groups[i]['small'] * groups[i]['large'],
                                          groups[i]['small'], groups[i]['large']), reverse=True)
+            if self.stack_rules:
+                # 叠放规则优先于投影大小：重/密度大的在下、不可压的在顶
+                expanded.sort(key=lambda i: stack_rank(groups[i]['key'][-1]))
             result.append(expanded)
         return result
 
@@ -467,9 +529,9 @@ class ContainerPacker:
                 px = x + (footprint_width - length) // 2
                 py = y + (footprint_height - width) // 2
                 weight = self.boxes[io][4]
-                if not self.can_place(px, py, z, length, width, height, weight):
+                if not self.can_place(px, py, z, length, width, height, weight, io):
                     return None
-                self._place(px, py, z, length, width, height)
+                self._place(px, py, z, length, width, height, io)
                 l, w, h, quantity, weight, box_type, _ = self.boxes[io]
                 type_count[box_type] += 1
                 self.box_colors.append({
@@ -585,8 +647,8 @@ class ContainerPacker:
     def _restore_plan(self, plan, colors):
         """恢复候选解，同时重建碰撞/支撑索引，便于后续展示或继续校验。"""
         self._reset_state()
-        for placement in plan:
-            self._place(*placement)
+        for placement, info in zip(plan, colors):
+            self._place(*placement, io=info.get('input_order'))
         self.box_colors = [dict(info) for info in colors]
 
     # ---------------- 增强版：列模式生成 + 有界束搜索 ---------------- #
@@ -610,12 +672,12 @@ class ContainerPacker:
             orientation[2], -orientation[0] * orientation[1],
             -min(orientation[0], orientation[1])))
 
-    @staticmethod
-    def _column_support_sequence(counts, orientations):
+    def _column_support_sequence(self, counts, orientations, groups):
         """把一个列模式展开为自下而上的货物序列。
 
         列内货物居中放置，上下底面中心重合，天然满足重心支撑规则；
-        按投影面积由大到小排列，形成稳定底座。
+        按投影面积由大到小排列，形成稳定底座。启用叠放规则时先按叠放次序排列，
+        无法满足叠放规则的列模式返回 None。
         """
         sequence = []
         for group_index, quantity in enumerate(counts):
@@ -626,6 +688,10 @@ class ContainerPacker:
             item[1][0] * item[1][1],
             min(item[1][0], item[1][1]),
             max(item[1][0], item[1][1])), reverse=True)
+        if self.stack_rules:
+            sequence.sort(key=lambda item: stack_rank(self.stack_attrs[groups[item[0]]['representative']]))
+            if self._column_order([groups[i]['representative'] for i, _ in sequence]) is None:
+                return None
         return sequence
 
     def _column_patterns_for_cell(self, cell_length, cell_width, groups,
@@ -760,7 +826,7 @@ class ContainerPacker:
         for counts in patterns:
             if not any(counts):
                 continue
-            sequence = self._column_support_sequence(counts, orientations)
+            sequence = self._column_support_sequence(counts, orientations, groups)
             if sequence is None:
                 continue
             used_volume = sum(counts[index] * volumes[index]
@@ -791,7 +857,7 @@ class ContainerPacker:
         dominant_index = max(
             range(len(groups)),
             key=lambda index: (
-                bool(groups[index]['key'][-1]),
+                groups[index]['key'][3],  # 禁止倒放
                 len(groups[index]['units']),
                 self.boxes[groups[index]['representative']][0]
                 * self.boxes[groups[index]['representative']][1]))
@@ -930,9 +996,9 @@ class ContainerPacker:
                 py = y + (cell_width - width) // 2
                 weight = self.boxes[io][4]
                 position = (px, py, z, length, width, height)
-                if not self.can_place(*position, weight):
+                if not self.can_place(*position, weight, io):
                     return None
-                self._place(*position)
+                self._place(*position, io)
                 l, w, h, quantity, weight, box_type, _ = self.boxes[io]
                 type_count[box_type] += 1
                 self.box_colors.append({
@@ -1090,9 +1156,9 @@ class ContainerPacker:
         grouped = {}
         for l, w, h, quantity, weight, box_type, io in self.boxes:
             if self.no_flip.get(io):
-                key = (min(l, w), max(l, w), h, True)
+                key = (min(l, w), max(l, w), h, True, self.stack_attrs[io])
             else:
-                key = (*sorted((l, w, h)), False)
+                key = (*sorted((l, w, h)), False, self.stack_attrs[io])
             if key not in grouped:
                 grouped[key] = {'key': key, 'units': [], 'representative': io}
             grouped[key]['units'].extend([io] * quantity)
@@ -1105,6 +1171,8 @@ class ContainerPacker:
         candidates = []
         for orientation in self._allowed(io, sorted_orientations(l, w, h)):
             capacity = self.container[2] // orientation[2]
+            if self.stack_attrs[io][1]:
+                capacity = min(capacity, 1)  # 不可压的货物不能叠成列
             if capacity <= 0:
                 continue
             area = orientation[0] * orientation[1]
@@ -1146,7 +1214,7 @@ class ContainerPacker:
         def add_unit(io, position):
             nonlocal number, used_volume, sink_score
             l, w, h, quantity, weight, box_type, _ = self.boxes[io]
-            self._place(*position)
+            self._place(*position, io)
             type_count[box_type] += 1
             self.box_colors.append({
                 'number': number,
@@ -1172,7 +1240,7 @@ class ContainerPacker:
             for io in units:
                 weight = self.boxes[io][4]
                 position = (x, y, z, length, width, height)
-                if not self.can_place(*position, weight):
+                if not self.can_place(*position, weight, io):
                     return None
                 add_unit(io, position)
                 z += height
@@ -1191,7 +1259,7 @@ class ContainerPacker:
             for x, y, z in sorted(self.points, key=lambda point: (point[2], point[1], point[0])):
                 for length, width, height in orientations:
                     if self.can_place(x, y, z, length, width, height,
-                                      self.boxes[io][4]):
+                                      self.boxes[io][4], io):
                         chosen = (x, y, z, length, width, height)
                         break
                 if chosen is not None:
@@ -1287,10 +1355,13 @@ class ContainerPacker:
             if quantity <= 0:
                 continue
             orientations = tuple(self._allowed(io, sorted_orientations(l, w, h)))
-            grouped.setdefault(orientations, []).extend([io] * quantity)
+            # 启用叠放规则时，叠放属性不同的货物不能合并为同一类
+            key = (orientations, self.stack_attrs[io]) if self.stack_rules else orientations
+            grouped.setdefault(key, []).extend([io] * quantity)
         kinds = []
-        for orientations, units in grouped.items():
+        for key, units in grouped.items():
             units.sort(key=lambda io: -self._sink_key(self.boxes[io]))
+            orientations = key[0] if self.stack_rules else key
             kinds.append((list(orientations), units))
         return kinds
 
@@ -1315,9 +1386,9 @@ class ContainerPacker:
             io = queues[kind][cursor[kind]]
             cursor[kind] += 1
             l, w, h, quantity, weight, box_type, _ = self.boxes[io]
-            if not self.can_place(*position, weight):
+            if not self.can_place(*position, weight, io):
                 return None
-            self._place(*position)
+            self._place(*position, io)
             type_count[box_type] += 1
             self.box_colors.append({
                 'number': len(self.box_colors) + 1,
@@ -1333,17 +1404,19 @@ class ContainerPacker:
         return (len(self.packing_plan), used_volume, sink_score,
                 list(self.packing_plan), [dict(info) for info in self.box_colors])
 
-    def _block_candidate(self, deadline=None, general=False, max_evaluations=None):
+    def _block_candidate(self, deadline=None, general=False, max_evaluations=None, rank_first=False):
         """块构建候选：只做一次贪心，或束搜索到 deadline / 达到 max_evaluations 次补全为止。
 
-        general=True 时同时使用组合块（不同货物拼成的块）。
+        general=True 时同时使用组合块（不同货物拼成的块）；rank_first=True 时（仅启用叠放
+        规则时有意义）重 / 密度大的块优先占底层。
         返回 (候选解, 统计)；候选解格式与其他直接生成的策略一致。
         """
         kinds = self._block_kinds()
         if not kinds:
             return None, {}
+        stack = [self.stack_attrs[units[0]] for _, units in kinds] if self.stack_rules else None
         search = BlockSearch(self.container, [(orientations, len(units)) for orientations, units in kinds],
-                             general=general)
+                             general=general, stack=stack, rank_first=rank_first)
         greedy = best = search.greedy()
         width = 0
         has_budget = (deadline is not None and time.time() < deadline) or max_evaluations
@@ -1386,7 +1459,7 @@ class ContainerPacker:
                 if not exhausted:
                     for (px, py, pz) in sorted(self.points, key=lambda p: (p[2], p[1], p[0])):
                         for (bl, bw, bh) in orients:
-                            if self.can_place(px, py, pz, bl, bw, bh, weight):
+                            if self.can_place(px, py, pz, bl, bw, bh, weight, io):
                                 best = (px, py, pz, bl, bw, bh)
                                 break
                         if best:
@@ -1395,7 +1468,7 @@ class ContainerPacker:
                     all_placed = False
                     exhausted = True
                     continue
-                self._place(*best)
+                self._place(*best, io)
                 used_volume += best[3] * best[4] * best[5]
                 sink_score += sk * (H - best[2])  # best[2]=箱底 z，越低得分越高
                 if record:
@@ -1496,9 +1569,14 @@ class ContainerPacker:
         if self.bottom_metric == 'manual':
             return self._pack_manual(total)  # 手动模式：严格按用户优先级摆放
         block = None
-        for options in ({}, {'general': True}):
+        variants = [{}, {'general': True}]
+        if self.stack_rules:
+            # 叠放规则下，再试「重 / 密度大的先占底层」的块排序，与默认排序取更优者
+            variants += [{'rank_first': True}, {'general': True, 'rank_first': True}]
+        for options in variants:
             candidate, _ = self._block_candidate(
-                max_evaluations=self.STANDARD_BEAM_EVALUATIONS if not options else None, **options)
+                max_evaluations=None if options.get('general') else self.STANDARD_BEAM_EVALUATIONS,
+                **options)
             if candidate is not None and (block is None
                                           or self._candidate_fit(candidate) > self._candidate_fit(block)):
                 block = candidate
@@ -1629,6 +1707,16 @@ class ContainerPacker:
             block, info = self._block_candidate(general=True)
             evals += info.get('evaluations', 0)
             consider_direct(block, 'general_block_greedy')
+
+        # --- 叠放规则下：重 / 密度大的块先占底层（与标准版相同的短束搜索 + 组合块贪心）。---
+        if self.stack_rules:
+            for options in ({'max_evaluations': self.STANDARD_BEAM_EVALUATIONS}, {'general': True}):
+                if complete():
+                    break
+                block, info = self._block_candidate(rank_first=True, **options)
+                evals += info.get('evaluations', 0)
+                consider_direct(block, 'ranked_general_block' if options.get('general')
+                                else 'ranked_block_search')
 
         # 列模式束搜索擅长「少种类、高重复」的清单；若它直接装完即可结束。
         if time_budget >= 30 and not complete():

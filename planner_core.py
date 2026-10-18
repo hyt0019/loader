@@ -71,6 +71,17 @@ def parse_txt(text):
 
 
 def parse_xlsx(file_like):
+    """读取货物清单 xlsx，返回 (container, boxes, ship_no, descriptions, no_flip, priority)。
+
+    需要「不可压」列时用 parse_cargo_xlsx。"""
+    data = parse_cargo_xlsx(file_like)
+    return (data['container'], data['boxes'], data['ship_no'], data['descriptions'],
+            data['no_flip'], data['priority'])
+
+
+def parse_cargo_xlsx(file_like):
+    """读取货物清单 xlsx，返回 dict：container / boxes / ship_no / descriptions /
+    no_flip / priority / no_stack（各列表按 boxes 顺序对齐）。"""
     import openpyxl
     wb = openpyxl.load_workbook(file_like, data_only=True)
     sheet = wb.active
@@ -89,7 +100,7 @@ def parse_xlsx(file_like):
             if isinstance(v, str) and v.startswith('零件描述'):
                 hdr = rr
                 break
-        boxes, descriptions, no_flip, priority = [], [], [], []
+        boxes, descriptions, no_flip, priority, no_stack = [], [], [], [], []
         if hdr:
             for rr in range(hdr + 1, sheet.max_row + 1):
                 l = sheet.cell(row=rr, column=2).value
@@ -106,8 +117,12 @@ def parse_xlsx(file_like):
                 descriptions.append('' if dv is None else str(dv))
                 no_flip.append(_parse_bool(sheet.cell(row=rr, column=8).value, False))
                 priority.append(to_float(sheet.cell(row=rr, column=9).value, 0.0))
+                # 第 10 列「不可压」由新版导出；旧文件没有这一列时为空，按「否」处理
+                no_stack.append(_parse_bool(sheet.cell(row=rr, column=10).value, False))
         wb.close()
-        return container, boxes, ship_no, descriptions, no_flip, priority
+        return {'container': container, 'boxes': boxes, 'ship_no': ship_no,
+                'descriptions': descriptions, 'no_flip': no_flip, 'priority': priority,
+                'no_stack': no_stack}
 
     # 旧版定位格式（向后兼容）：第一行为集装箱长宽高
     container = tuple(to_mm(cell.value) for cell in list(sheet[1])[:3])
@@ -120,8 +135,9 @@ def parse_xlsx(file_like):
         boxes.append((to_mm(row[0]), to_mm(row[1]), to_mm(row[2]),
                       to_int(row[3]), to_float(row[4]), str(row[5])))
     wb.close()
-    return (container, boxes, ship_no, [''] * len(boxes),
-            [False] * len(boxes), [0.0] * len(boxes))
+    return {'container': container, 'boxes': boxes, 'ship_no': ship_no,
+            'descriptions': [''] * len(boxes), 'no_flip': [False] * len(boxes),
+            'priority': [0.0] * len(boxes), 'no_stack': [False] * len(boxes)}
 
 
 
@@ -159,6 +175,26 @@ def df_to_boxes(df):
 
 CARGO_TYPES = ['木箱', '纸箱', '托盘']
 
+# 严格执行底层优先指标时的叠放规则说明（方案文件里记录指标名，空字符串表示未启用）
+STACK_RULE_LABELS = {
+    'weight': '严格：重的不压在轻的上面',
+    'volumetric': '严格：密度大的不压在密度小的上面',
+}
+STACK_RULE_NONE = '不限制'
+
+
+def stack_rule_label(strict_metric):
+    return STACK_RULE_LABELS.get(strict_metric or '', STACK_RULE_NONE)
+
+
+def stack_rule_metric(label):
+    """从 Excel 中的叠放规则说明反查指标名；无法识别时视为未启用。"""
+    text = str(label or '').strip()
+    for metric, name in STACK_RULE_LABELS.items():
+        if text == name:
+            return metric
+    return ''
+
 # 内置示例清单：(长, 宽, 高, 数量, 重量, 类型, 禁止倒放, 优先级, 零件描述)
 SAMPLE_CARGO = [(0.49, 0.4, 0.09, 44, 18.0, '纸箱', False, 0, '法兰盘配件'),
                 (1.2, 1.0, 1.35, 7, 1472.0, '木箱', False, 0, '主机箱体'),
@@ -188,7 +224,12 @@ def rows_to_boxes(rows):
 
 def rows_to_boxes_ex(rows):
     """货物行 -> (boxes, no_flip, priority, descriptions)，四者按同一顺序对齐（供装箱器使用）。"""
-    boxes, no_flip, priority, descriptions = [], [], [], []
+    return rows_to_boxes_full(rows)[:4]
+
+
+def rows_to_boxes_full(rows):
+    """货物行 -> (boxes, no_flip, priority, descriptions, no_stack)，按同一顺序对齐。"""
+    boxes, no_flip, priority, descriptions, no_stack = [], [], [], [], []
     for r in rows:
         l, w, h = to_mm(r['l']), to_mm(r['w']), to_mm(r['h'])
         n, wt = to_int(r['n']), to_float(r['wt'])
@@ -198,7 +239,8 @@ def rows_to_boxes_ex(rows):
             no_flip.append(_parse_bool(r.get('no_flip', False), False))
             priority.append(to_float(r.get('prio', 0)))
             descriptions.append(str(r.get('desc', '')))
-    return boxes, no_flip, priority, descriptions
+            no_stack.append(_parse_bool(r.get('no_stack', False), False))
+    return boxes, no_flip, priority, descriptions, no_stack
 
 
 def _valid_rows(rows):
@@ -262,7 +304,7 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
 
     # 表头（第 4 行）
     header = ['零件描述 / 品名', '长(m)', '宽(m)', '高(m)', '数量', '重量(kg)',
-              '类型', '禁止倒放', '优先级']
+              '类型', '禁止倒放', '优先级', '不可压']
     HEAD_ROW = 4
     for j, name in enumerate(header, start=1):
         c = ws.cell(row=HEAD_ROW, column=j, value=name)
@@ -276,14 +318,15 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
         label = TYPE_LABELS.get(code, str(r['type']))
         vals = [str(r.get('desc', '')), float(r['l']), float(r['w']), float(r['h']),
                 int(r['n']), float(r['wt']), label,
-                '是' if _parse_bool(r.get('no_flip'), False) else '否', int(r.get('prio', 0))]
+                '是' if _parse_bool(r.get('no_flip'), False) else '否', int(r.get('prio', 0)),
+                '是' if _parse_bool(r.get('no_stack'), False) else '否']
         for j, v in enumerate(vals, start=1):
             c = ws.cell(row=rrow, column=j, value=v)
             c.border = border
             if j >= 2:
                 c.alignment = center
 
-    for idx, width in enumerate([26, 10, 10, 10, 8, 11, 9, 10, 8], start=1):
+    for idx, width in enumerate([26, 10, 10, 10, 8, 11, 9, 10, 8, 8], start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
     ws.freeze_panes = f'A{HEAD_ROW + 1}'
     buf = io.BytesIO()
@@ -296,10 +339,12 @@ def build_cargo_xlsx(container_mm, rows, ship_no=''):
 #                                  装箱计算                                  #
 # --------------------------------------------------------------------------- #
 def run_packing(container, boxes, threshold, mode, budget,
-                no_flip=None, priority=None, bottom_metric='none', descriptions=None):
+                no_flip=None, priority=None, bottom_metric='none', descriptions=None,
+                no_stack=None, strict_stack=False):
     packer = ContainerPacker(container, boxes, threshold, no_flip=no_flip,
                              priority=priority, bottom_metric=bottom_metric,
-                             descriptions=descriptions)
+                             descriptions=descriptions, no_stack=no_stack,
+                             strict_stack=strict_stack)
     if mode == "enhanced":
         fits, msg, stats = packer.pack_enhanced(time_budget=budget, verbose=False)
     else:
@@ -313,8 +358,22 @@ def run_packing(container, boxes, threshold, mode, budget,
     return packer, fits, msg, stats
 
 
-def baseline_note(container, boxes, threshold, constrained_placed):
-    """当启用了「禁止倒放/底层优先」等约束、且未能全部装入时，
+def constraint_labels(no_flip=None, bottom_metric='none', no_stack=None, strict_stack=False):
+    """本次计算启用的、可能减少装载件数的限制（用于提示文字）。"""
+    labels = []
+    if no_flip and any(no_flip):
+        labels.append('禁止倒放')
+    if bottom_metric != 'none' and not (strict_stack and bottom_metric in STACK_RULE_LABELS):
+        labels.append('底层优先')
+    if strict_stack and bottom_metric in STACK_RULE_LABELS:
+        labels.append('严格叠放规则')
+    if no_stack and any(no_stack):
+        labels.append('不可压')
+    return labels
+
+
+def baseline_note(container, boxes, threshold, constrained_placed, labels=None):
+    """当启用了「禁止倒放/底层优先/叠放规则」等约束、且未能全部装入时，
     对照「不加任何约束」的方案能装多少件，据实提示用户约束的代价（需求5）。
 
     对照只用块构建贪心（通常不到一秒），避免在计算时限之外再耗时完整求解一遍。"""
@@ -322,7 +381,8 @@ def baseline_note(container, boxes, threshold, constrained_placed):
     candidate, _ = base._block_candidate()
     base_placed = candidate[0] if candidate else 0
     if base_placed > constrained_placed:
-        return (f"提示：受「禁止倒放 / 底层优先」限制，本方案装入 {constrained_placed} 件；"
+        names = ' / '.join(labels or ('禁止倒放', '底层优先'))
+        return (f"提示：受「{names}」限制，本方案装入 {constrained_placed} 件；"
                 f"若取消这些限制，至少可装 {base_placed} 件。"
                 f"已在保留您所选限制的前提下尽力装载——如需装下更多，可放宽限制。")
     return None
@@ -370,6 +430,7 @@ def build_category_summary(packer):
             '单件重量(kg)': weight,
             '禁止倒放': '是' if packer.no_flip.get(io, False) else '否',
             '优先级': packer.priority.get(io, 0),
+            '不可压': '是' if packer.no_stack.get(io, False) else '否',
             '已装重量(kg)': round(weight * p, 1),
             '单件体积(m³)': round(l * w * h / 1e9, 4),
             '已装体积(m³)': round(l * w * h * p / 1e9, 3),
@@ -387,7 +448,8 @@ def build_excel_bytes(packer, stats, ship_no=''):
     total_weight = sum(info['weight'] for info in packer.box_colors)
     summary = pd.DataFrame({
         '项目': ['发货单号', '集装箱(长×宽×高 m)', '集装箱容积(m³)', '装入件数', '货物总件数', '未装件数',
-                 '空间利用率', '已装货物体积(m³)', '已装货物总重(kg)', '搜索评估次数', '搜索用时(s)'],
+                 '空间利用率', '已装货物体积(m³)', '已装货物总重(kg)', '叠放规则',
+                 '搜索评估次数', '搜索用时(s)'],
         '数值': [
             ship_no or '—',
             f"{packer.container[0] / MM:g} × {packer.container[1] / MM:g} × {packer.container[2] / MM:g}",
@@ -395,6 +457,7 @@ def build_excel_bytes(packer, stats, ship_no=''):
             stats['placed'], stats['total'], stats['total'] - stats['placed'],
             f"{stats['utilization'] * 100:.1f}%",
             round(used_vol, 3), round(total_weight, 1),
+            stack_rule_label(strict_metric(packer)),
             stats.get('evaluations', ''), stats.get('seconds', ''),
         ],
     })
@@ -414,14 +477,22 @@ def build_excel_bytes(packer, stats, ship_no=''):
     return buf.getvalue()
 
 
+def strict_metric(packer):
+    """方案启用的严格叠放指标（'weight' / 'volumetric'），未启用时为空字符串。"""
+    return packer.bottom_metric if packer.strict_stack else ''
+
+
 def build_json_bytes(packer, ship_no=''):
     data = {
         'ship_no': ship_no,
         'container': [c / MM for c in packer.container],
+        # 第 10 列为「不可压」；strict_stack 记录严格执行的底层优先指标（空字符串 = 未启用）
+        'strict_stack': strict_metric(packer),
         'boxes': [[l / MM, w / MM, h / MM, n, weight, t,
                    packer.descriptions.get(i, ''),
                    bool(packer.no_flip.get(i, False)),
-                   packer.priority.get(i, 0)]
+                   packer.priority.get(i, 0),
+                   bool(packer.no_stack.get(i, False))]
                   for (l, w, h, n, weight, t, i) in packer.boxes],
         'packing_plan': [
             {'position': [p / MM for p in pos[:3]], 'dimensions': [p / MM for p in pos[3:]], 'box_info': info}
@@ -433,16 +504,20 @@ def build_json_bytes(packer, ship_no=''):
 def load_plan_into_packer(plan):
     """从已保存的方案 JSON 重建 packer（仅用于查看，不重新计算）。"""
     container = tuple(to_mm(x) for x in plan['container'])
-    boxes, descriptions, no_flip, priority = [], [], [], []
+    boxes, descriptions, no_flip, priority, no_stack = [], [], [], [], []
     for b in plan['boxes']:
         l, w, h, n, weight, t = b[:6]
         boxes.append((to_mm(l), to_mm(w), to_mm(h), int(n), float(weight), t))
         descriptions.append(b[6] if len(b) > 6 else '')
-        # 第 8、9 列由新版方案保存；旧 JSON 没有这些列时保持原来的默认行为。
+        # 第 8~10 列由新版方案保存；旧 JSON 没有这些列时保持原来的默认行为。
         no_flip.append(_parse_bool(b[7], False) if len(b) > 7 else False)
         priority.append(to_float(b[8], 0.0) if len(b) > 8 else 0.0)
+        no_stack.append(_parse_bool(b[9], False) if len(b) > 9 else False)
+    metric = plan.get('strict_stack') or ''
+    metric = metric if metric in STACK_RULE_LABELS else ''
     packer = ContainerPacker(container, boxes, no_flip=no_flip,
-                             priority=priority, descriptions=descriptions)
+                             priority=priority, descriptions=descriptions, no_stack=no_stack,
+                             bottom_metric=metric or 'none', strict_stack=bool(metric))
     packer.packing_plan = [
         (to_mm(it['position'][0]), to_mm(it['position'][1]), to_mm(it['position'][2]),
          to_mm(it['dimensions'][0]), to_mm(it['dimensions'][1]), to_mm(it['dimensions'][2]))
@@ -523,8 +598,9 @@ def load_plan_xlsx(file_like):
         description = '' if row['零件描述'] is None else str(row['零件描述'])
         no_flip = _parse_bool(row.get('禁止倒放'), False)
         priority = to_float(row.get('优先级'), 0.0)
+        no_stack = _parse_bool(row.get('不可压'), False)
         categories.append((category, dims_m, quantity, weight, type_code,
-                           description, no_flip, priority))
+                           description, no_flip, priority, no_stack))
 
     categories.sort(key=lambda item: item[0])
     expected = list(range(1, len(categories) + 1))
@@ -533,12 +609,15 @@ def load_plan_xlsx(file_like):
         raise ValueError(f'分类汇总表的类别编号应从 1 连续排列，实际为：{actual}')
 
     boxes = [(to_mm(dims[0]), to_mm(dims[1]), to_mm(dims[2]), quantity, weight, type_code)
-             for _, dims, quantity, weight, type_code, _, _, _ in categories]
-    descriptions = [description for _, _, _, _, _, description, _, _ in categories]
-    no_flip = [flag for _, _, _, _, _, _, flag, _ in categories]
-    priority = [value for _, _, _, _, _, _, _, value in categories]
+             for _, dims, quantity, weight, type_code, _, _, _, _ in categories]
+    descriptions = [item[5] for item in categories]
+    no_flip = [item[6] for item in categories]
+    priority = [item[7] for item in categories]
+    no_stack = [item[8] for item in categories]
+    metric = stack_rule_metric(summary.get('叠放规则'))
     packer = ContainerPacker(container, boxes, no_flip=no_flip,
-                             priority=priority, descriptions=descriptions)
+                             priority=priority, descriptions=descriptions, no_stack=no_stack,
+                             bottom_metric=metric or 'none', strict_stack=bool(metric))
 
     detail_rows = _xlsx_table(
         wb['装箱清单'],
@@ -558,7 +637,7 @@ def load_plan_xlsx(file_like):
             raise ValueError(f'装载顺序 {number} 的摆放尺寸或位置无效')
 
         (_, original_m, _, category_weight, type_code, category_desc,
-         _, _) = categories[category - 1]
+         _, _, _) = categories[category - 1]
         type_counts[type_code] = type_counts.get(type_code, 0) + 1
         packer.packing_plan.append(tuple(to_mm(value) for value in position_m + placed_m))
         packer.box_colors.append({
@@ -599,6 +678,8 @@ def saved_plan_form_data(packer, ship_no=''):
         'descriptions': [packer.descriptions.get(io, '') for io in input_orders],
         'no_flip': [bool(packer.no_flip.get(io, False)) for io in input_orders],
         'priority': [packer.priority.get(io, 0) for io in input_orders],
+        'no_stack': [bool(packer.no_stack.get(io, False)) for io in input_orders],
+        'strict_stack': strict_metric(packer),
     }
 
 

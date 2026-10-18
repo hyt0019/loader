@@ -15,6 +15,10 @@ Fanslau & Bortfeldt (2010) CLTRS、Zhu & Lim (2012) ID-GLA、Araya & Riff (2014)
 所有坐标为整数毫米。支撑规则（与几何内核一致）：非落地货物的底面中心必须落在
 下方接触面的凸包内部，即重心有支撑、不会悬空倾倒。
 
+叠放规则（可选，与几何内核一致）：每类货物带一个叠放属性 (比较值, 不可压)。
+「不可压」的货物顶上不能放任何货物；比较值（重量或密度）不为 None 时，
+上层货物的比较值不得大于它直接压着的任何一件货物。比较值为 None 的货物不参与比较。
+
 块的内部表示：
   comps  = ((dx, dy, dz, a, b, c, nx, ny, nz, kind), ...)  相对块原点的若干简单子块
   counts = ((kind, 件数), ...)
@@ -93,19 +97,52 @@ def center_supported(x, y, l, w, rects):
 
 
 # --------------------------------------------------------------------------- #
+#                               叠放规则                                       #
+# --------------------------------------------------------------------------- #
+FREE_STACK = (None, False)  # 不受叠放规则限制的货物
+
+
+def can_stack(upper, lower):
+    """叠放属性为 upper 的货物能否直接压在属性为 lower 的货物上。
+
+    属性 = (比较值或 None, 不可压)。比较值相等时允许（同一种货可以互相叠放）；
+    任一方没有比较值（如未填重量）时不比较。
+    """
+    if lower[1]:
+        return False
+    if upper[0] is None or lower[0] is None:
+        return True
+    return upper[0] <= lower[0] * (1 + 1e-9)
+
+
+def stack_rank(attr):
+    """自下而上的叠放次序：可压的在下、不可压的在顶；比较值大的在下。"""
+    return (attr[1], -attr[0] if attr[0] is not None else float('-inf'))
+
+
+def _overlap(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2):
+    return ax1 < bx2 and bx1 < ax2 and ay1 < by2 and by1 < ay2
+
+
+# --------------------------------------------------------------------------- #
 #                              块构建搜索                                      #
 # --------------------------------------------------------------------------- #
 class _State:
-    """部分装载方案。chain 为放置记录的链表 (placement, parent_chain)，复制开销为常数。"""
-    __slots__ = ('spaces', 'remaining', 'tops', 'volume', 'count', 'chain')
+    """部分装载方案。chain 为放置记录的链表 (placement, parent_chain)，复制开销为常数。
 
-    def __init__(self, spaces, remaining, tops, volume, count, chain):
+    marks 仅在启用叠放规则时使用：(under, over)，分别按高度记录货物的顶面和
+    （离地的）底面 (x1, y1, x2, y2, 类别)，用于判断新块压着谁、又被谁压着。
+    """
+    __slots__ = ('spaces', 'remaining', 'tops', 'volume', 'count', 'chain', 'marks')
+
+    def __init__(self, spaces, remaining, tops, volume, count, chain, marks=None):
         self.spaces = spaces
         self.remaining = remaining
         self.tops = tops
         self.volume = volume
         self.count = count
         self.chain = chain
+        self.marks = marks
 
     def placements(self):
         """按放置先后返回 [(x, y, z, comps), ...]。"""
@@ -122,6 +159,10 @@ class BlockSearch:
     """kinds: [(允许朝向列表 [(a, b, c), ...], 件数), ...]；朝向第三维为高度。
 
     general=True 时额外生成组合块（不同货物拼成的块），最多 max_general 个。
+    stack: 每类的叠放属性 [(比较值或 None, 不可压), ...]；为 None 时不启用叠放规则。
+    rank_first: 启用叠放规则时，候选块先按叠放次序（重 / 密度大的优先）再按评分排序，
+                让需要压在下面的货物先占底层。它常能多装件数，但不一定多装体积，
+                因此作为额外候选与默认排序比较，取更优者。
     """
 
     MIN_FILL = 0.995     # 组合块外包长方体的最低填充率（BR 测试集上 0.995 优于 0.98）
@@ -129,8 +170,11 @@ class BlockSearch:
     GENERAL_ROUNDS = 2   # 组合轮数（每轮把两个块拼成一个）
     MAX_GENERAL = 500    # 组合块池上限：块池越大，每步扫描越慢、搜索次数越少
 
-    def __init__(self, container, kinds, general=False, max_general=None):
+    def __init__(self, container, kinds, general=False, max_general=None, stack=None,
+                 rank_first=False):
         self.L, self.W, self.H = (int(v) for v in container)
+        self.stack = list(stack) if stack is not None else None
+        self.ranks = [stack_rank(attr) for attr in self.stack] if rank_first and stack is not None else None
         self.orients = [tuple(sorted(set(o))) for o, _ in kinds]
         self.counts = tuple(int(n) for _, n in kinds)
         self.volumes = [o[0][0] * o[0][1] * o[0][2] if o else 0 for o in self.orients]
@@ -156,7 +200,10 @@ class BlockSearch:
             for a, b, c in self.orients[k]:
                 shapes = {(1, 1, 1)}
                 for m in range(2, min(n, self.SEED_MAX) + 1):
-                    shapes.update(((m, 1, 1), (1, m, 1), (1, 1, m)))
+                    if self._no_stack(k):
+                        shapes.update(((m, 1, 1), (1, m, 1)))
+                    else:
+                        shapes.update(((m, 1, 1), (1, m, 1), (1, 1, m)))
                 for nx, ny, nz in shapes:
                     bx, by, bz = nx * a, ny * b, nz * c
                     if bx > L or by > W or bz > H:
@@ -234,6 +281,8 @@ class BlockSearch:
         volume = v1 + v2
         if volume < fill * bx * by * bz:
             return None
+        if axis == 2 and self.stack is not None and not self._stack_inside(comps1, z1, comps2):
+            return None
         merged = dict(counts1)
         for k, n in counts2:
             merged[k] = merged.get(k, 0) + n
@@ -249,10 +298,53 @@ class BlockSearch:
         known.add(key)
         return (bx, by, bz, volume, comps, counts, flat)
 
+    # ---------------- 叠放规则 ---------------- #
+    def _no_stack(self, kind):
+        return self.stack is not None and self.stack[kind][1]
+
+    def _stack_inside(self, lower_comps, lower_height, upper_comps):
+        """组合块上下拼接时，上块底层的每个子块都要能压在它接触到的下块顶层子块上。"""
+        stack = self.stack
+        for ux, uy, uz, ua, ub, _, unx, uny, _, uk in upper_comps:
+            if uz:
+                continue
+            ux2, uy2 = ux + unx * ua, uy + uny * ub
+            for lx, ly, lz, la, lb, lc, lnx, lny, lnz, lk in lower_comps:
+                if lz + lnz * lc != lower_height:
+                    continue
+                if (_overlap(ux, uy, ux2, uy2, lx, ly, lx + lnx * la, ly + lny * lb)
+                        and not can_stack(stack[uk], stack[lk])):
+                    return False
+        return True
+
+    def _stack_ok(self, px, py, z, comps, marks):
+        """块放在 (px, py, z) 时：底层子块压着的货物、以及恰好压在子块顶面上的已有货物
+        （悬挑部分下方后放入的块）都必须符合叠放规则。"""
+        stack = self.stack
+        under, over = marks
+        below = under.get(z, ()) if z else ()
+        for dx, dy, dz, a, b, c, nx, ny, nz, k in comps:
+            x1, y1 = px + dx, py + dy
+            x2, y2 = x1 + nx * a, y1 + ny * b
+            attr = stack[k]
+            if not dz:
+                for ux1, uy1, ux2, uy2, uk in below:
+                    if _overlap(x1, y1, x2, y2, ux1, uy1, ux2, uy2) and not can_stack(attr, stack[uk]):
+                        return False
+            for ox1, oy1, ox2, oy2, ok in over.get(z + dz + nz * c, ()):
+                if _overlap(x1, y1, x2, y2, ox1, oy1, ox2, oy2) and not can_stack(stack[ok], attr):
+                    return False
+        return True
+
+    @staticmethod
+    def _copy_marks(marks):
+        return None if marks is None else (dict(marks[0]), dict(marks[1]))
+
     # ---------------- 基本操作 ---------------- #
     def root(self):
         spaces = [(0, 0, 0, self.L, self.W, self.H)] if min(self.L, self.W, self.H) > 0 else []
-        return _State(spaces, list(self.counts), {}, 0, 0, None)
+        marks = ({}, {}) if self.stack is not None else None
+        return _State(spaces, list(self.counts), {}, 0, 0, None, marks)
 
     def _mins(self, remaining):
         """剩余货物在三个方向上可能的最小尺寸；货物已全部装完时返回 None。"""
@@ -310,7 +402,7 @@ class BlockSearch:
             for a, b, c in self.orients[k]:
                 if a > sx or b > sy or c > sz:
                     continue
-                caps = (sx // a, sy // b, sz // c)
+                caps = (sx // a, sy // b, sz // c if not self._no_stack(k) else min(1, sz // c))
                 if caps[0] * caps[1] * caps[2] <= r:
                     shapes = (caps,)
                 else:
@@ -352,20 +444,24 @@ class BlockSearch:
                     waste += bx * by * rz
                 out.append((volume - waste, volume, _GENERAL_TIE, bx, by, bz, comps, counts))
         out.sort(key=_SCORE, reverse=True)
+        if self.ranks is not None:
+            ranks = self.ranks  # 稳定排序：同一叠放层级内仍按评分
+            out.sort(key=lambda cand: max(ranks[k] for k, _ in cand[7]))
         return out
 
-    def _position(self, space, cand, tops):
-        """在空间底面四角中依次尝试（离柜角近的优先），返回第一个底层全部有支撑的位置。"""
+    def _position(self, space, cand, tops, marks=None):
+        """在空间底面四角中依次尝试（离柜角近的优先），返回第一个底层全部有支撑、
+        且（启用时）符合叠放规则的位置。"""
         x1, y1, z1, x2, y2, z2 = space
         bx, by, comps = cand[3], cand[4], cand[6]
         left = x1 <= self.L - x2
         front = y1 <= self.W - y2
         xs = (x1, x2 - bx) if left else (x2 - bx, x1)
         ys = (y1, y2 - by) if front else (y2 - by, y1)
-        if z1 == 0:
+        if z1 == 0 and marks is None:
             return xs[0], ys[0]
-        rects = tops.get(z1)
-        if not rects:
+        rects = tops.get(z1) if z1 else None
+        if z1 and not rects:
             return None
         tried = set()
         for px in xs:
@@ -373,8 +469,11 @@ class BlockSearch:
                 if (px, py) in tried:
                     continue
                 tried.add((px, py))
-                if self._block_supported(px, py, bx, by, comps, rects):
-                    return px, py
+                if z1 and not self._block_supported(px, py, bx, by, comps, rects):
+                    continue
+                if marks is not None and not self._stack_ok(px, py, z1, comps, marks):
+                    continue
+                return px, py
         return None
 
     @staticmethod
@@ -439,8 +538,8 @@ class BlockSearch:
         result.extend(accepted)
         return result
 
-    def _apply(self, spaces, remaining, tops, space, cand, pos, mins):
-        """把候选块放到 pos，原地更新 remaining / tops，返回新的空间列表、放置记录与件数。"""
+    def _apply(self, spaces, remaining, tops, space, cand, pos, mins, marks=None):
+        """把候选块放到 pos，原地更新 remaining / tops / marks，返回新的空间列表、放置记录与件数。"""
         _, volume, _, bx, by, bz, comps, counts = cand
         px, py = pos
         z = space[2]
@@ -448,10 +547,15 @@ class BlockSearch:
         for k, n in counts:
             remaining[k] -= n
             placed += n
-        for dx, dy, dz, a, b, c, nx, ny, nz, _ in comps:
+        for dx, dy, dz, a, b, c, nx, ny, nz, k in comps:
             top = z + dz + nz * c
             rect = (px + dx, py + dy, px + dx + nx * a, py + dy + ny * b)
             tops[top] = tops.get(top, ()) + (rect,)
+            if marks is not None:
+                under, over = marks
+                under[top] = under.get(top, ()) + (rect + (k,),)
+                if z + dz:
+                    over[z + dz] = over.get(z + dz, ()) + (rect + (k,),)
         box = (px, py, z, px + bx, py + by, z + bz)
         new_mins = self._mins(remaining) or mins
         return self._update_spaces(spaces, box, new_mins), (px, py, z, comps), volume, placed
@@ -462,6 +566,7 @@ class BlockSearch:
         spaces = list(state.spaces)
         remaining = list(state.remaining)
         tops = dict(state.tops)
+        marks = self._copy_marks(state.marks)
         volume, count, chain = state.volume, state.count, state.chain
         while spaces:
             mins = self._mins(remaining)
@@ -472,10 +577,10 @@ class BlockSearch:
                 i = self._pick_space(spaces)
                 space = spaces[i]
                 for cand in self._candidates(space, remaining, mins):
-                    pos = self._position(space, cand, tops)
+                    pos = self._position(space, cand, tops, marks)
                     if pos is not None:
                         spaces, record, gained, pieces = self._apply(
-                            spaces, remaining, tops, space, cand, pos, mins)
+                            spaces, remaining, tops, space, cand, pos, mins, marks)
                         volume += gained
                         count += pieces
                         chain = (record, chain)
@@ -485,7 +590,7 @@ class BlockSearch:
                     break
                 spaces.pop(i)  # 该空间放不下任何剩余货物
         self.evaluations += 1
-        return _State(spaces, remaining, tops, volume, count, chain)
+        return _State(spaces, remaining, tops, volume, count, chain, marks)
 
     def _children(self, state, width):
         """在当前选中的空间里展开前 width 个可行块，得到子方案。"""
@@ -498,15 +603,16 @@ class BlockSearch:
             space = spaces[i]
             children = []
             for cand in self._candidates(space, state.remaining, mins):
-                pos = self._position(space, cand, state.tops)
+                pos = self._position(space, cand, state.tops, state.marks)
                 if pos is None:
                     continue
                 remaining = list(state.remaining)
                 tops = dict(state.tops)
+                marks = self._copy_marks(state.marks)
                 new_spaces, record, gained, pieces = self._apply(
-                    spaces, remaining, tops, space, cand, pos, mins)
+                    spaces, remaining, tops, space, cand, pos, mins, marks)
                 children.append(_State(new_spaces, remaining, tops, state.volume + gained,
-                                       state.count + pieces, (record, state.chain)))
+                                       state.count + pieces, (record, state.chain), marks))
                 if len(children) >= width:
                     break
             if children:

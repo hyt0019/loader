@@ -69,6 +69,20 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(len(plan['packing_plan']), 8)
         self.assertEqual(plan['boxes'][0][6], '立方件')
 
+    def test_job_with_stacking_rules(self):
+        rows = [{**ROW, 'n': 4, 'wt': 10.0, 'desc': '轻'},
+                {**ROW, 'l': 0.5, 'w': 0.5, 'h': 0.5, 'n': 4, 'wt': 50.0, 'desc': '重', 'no_stack': True}]
+        job = {**JOB, 'rows': rows, 'bottom_metric': 'volumetric', 'strict_stack': True}
+        done = self.wait(self.client.post('/api/jobs', json=job).json()['id'])
+        self.assertEqual(done['status'], 'done', done.get('error'))
+        plan = done['result']['plan']
+        self.assertEqual(plan['strict_stack'], 'volumetric')
+        self.assertEqual([box[9] for box in plan['boxes']], [False, True])
+        self.assertEqual(done['result']['stats']['placed'], 8)
+        # 未选指标时严格执行不生效
+        loose = self.wait(self.client.post('/api/jobs', json={**job, 'bottom_metric': 'none'}).json()['id'])
+        self.assertEqual(loose['result']['plan']['strict_stack'], '')
+
     def test_cancel_stops_job(self):
         job_id = self.client.post('/api/jobs', json={**JOB, 'mode': 'enhanced'}).json()['id']
         snap = self.client.post(f'/api/jobs/{job_id}/cancel').json()
@@ -103,7 +117,8 @@ class ServerApiTests(unittest.TestCase):
         self.assertIn('输入数据有误', bad_type.json()['detail'])
 
     def test_cargo_export_import_round_trip(self):
-        rows = [ROW, {**ROW, 'l': 0.5, 'type': '托盘', 'no_flip': True, 'prio': 3, 'desc': '底层件'}]
+        rows = [ROW, {**ROW, 'l': 0.5, 'type': '托盘', 'no_flip': True, 'prio': 3, 'desc': '底层件',
+                      'no_stack': True}]
         body = {'container': [5.8, 2.35, 2.35], 'ship_no': 'SO-T2', 'rows': rows}
         for fmt in ('txt', 'xlsx'):
             exported = self.client.post(f'/api/cargo/export?fmt={fmt}', json=body)
@@ -114,9 +129,10 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(imported['ship_no'], 'SO-T2')
             self.assertEqual([r['type'] for r in imported['rows']], ['纸箱', '托盘'])
             self.assertEqual([r['desc'] for r in imported['rows']], ['立方件', '底层件'])
-            if fmt == 'xlsx':  # TXT 格式本身不保存禁止倒放与优先级
+            if fmt == 'xlsx':  # TXT 格式本身不保存禁止倒放、优先级与不可压
                 self.assertEqual([r['no_flip'] for r in imported['rows']], [False, True])
                 self.assertEqual([r['prio'] for r in imported['rows']], [0, 3])
+                self.assertEqual([r['no_stack'] for r in imported['rows']], [False, True])
 
     def test_cargo_import_from_pasted_gbk_text(self):
         text = '5.8 2.35 2.35\n1\n1 1 1 8 10 1\n'

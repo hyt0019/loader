@@ -197,6 +197,10 @@ input.invalid { border-color: #D9897F; background: #FFF8F7; }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(14px); }
 .switch input:focus-visible + .track { box-shadow: 0 0 0 3px rgba(35,71,217,.18); }
+.switch.off { cursor: not-allowed; opacity: .55; }
+.strict-opt { margin: 4px 0 8px 6px; padding-left: 12px; border-left: 2px solid var(--accent-line); }
+.strict-opt .switch { margin-bottom: 4px; }
+.strict-opt .caption.tight { margin: 0 0 2px 44px; }
 
 .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 3px; gap: 3px;
   background: #E9EAE6; border-radius: 9px; margin-bottom: 8px; }

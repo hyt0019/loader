@@ -109,6 +109,8 @@ export class PlanViewer {
     const [L, W, H] = plan.container.map(Number);
     this.dims = [L, W, H];
     this.total = plan.packing_plan.length;
+    // 方案 boxes 第 10 列为「不可压」（旧方案没有这一列）
+    this.noStack = new Set((plan.boxes || []).flatMap((box, io) => (box[9] ? [io] : [])));
     this.categories = new Map();
     plan.packing_plan.forEach((item) => {
       const io = item.box_info.input_order;
@@ -319,7 +321,8 @@ export class PlanViewer {
     const [dl, dw, dh] = info.original_dimensions;
     const [x, y, z] = item.position;
     const desc = info.desc ? `${escapeHtml(info.desc)}<br>` : '';
-    tip.innerHTML = `<b>箱号 ${info.number}</b>｜类别 ${info.input_order + 1}｜${escapeHtml(typeLabel(info.type))}<br>`
+    const noStack = this.noStack && this.noStack.has(info.input_order) ? '｜不可压' : '';
+    tip.innerHTML = `<b>箱号 ${info.number}</b>｜类别 ${info.input_order + 1}｜${escapeHtml(typeLabel(info.type))}${noStack}<br>`
       + `${desc}尺寸 ${g(dl)}×${g(dw)}×${g(dh)} m｜重量 ${g(info.weight)} kg<br>`
       + `摆放 ${g(item.dimensions[0])}×${g(item.dimensions[1])}×${g(item.dimensions[2])} m｜位置 (${g(x)}, ${g(y)}, ${g(z)})`;
     tip.hidden = false;
