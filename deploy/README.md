@@ -76,7 +76,7 @@ docker compose up -d --build
 ## 已有 Caddy 网关容器时（与其他系统共用服务器）
 
 服务器上已经有其他 Docker 项目用 Caddy 占着 80/443 时，不要再启动本项目的 Caddy，
-而是让装箱网站加入那个网关的 Docker 网络，再在它的 Caddyfile 里为子域名加一个站点。
+而是让装箱网站加入那个网关的 Docker 网络，再在网关的站点配置里为子域名加一个站点。
 
 1. 查网关容器所在的网络名（把容器名换成你的网关容器）：
 
@@ -87,12 +87,15 @@ docker compose up -d --build
 2. 启动装箱网站（只启动网站本身，默认同时只算一个任务、内存上限 400 MB、CPU 上限 1 核）：
 
    ```bash
-   git clone https://github.com/hyt0019/loader.git && cd loader
+   git clone https://github.com/hyt0019/loader.git hyt-loader && cd hyt-loader
    echo "GATEWAY_NETWORK=<上一步查到的网络名>" > .env
    docker compose -f docker-compose.shared.yml up -d --build
    ```
 
-3. 在网关的 Caddyfile 末尾加一个站点块，然后重新加载 Caddy：
+   compose 项目名固定为 `hyt-loader`（见 `docker-compose.shared.yml` 的 `name`），与网关项目互不相干：
+   网关项目执行 `docker compose up --remove-orphans` 或重建时都不会删掉装箱网站。
+
+3. 在网关的站点配置中加一个站点块，然后重启网关：
 
    ```caddy
    loader.example.com {
@@ -101,27 +104,36 @@ docker compose up -d --build
    }
    ```
 
+   推荐的做法是网关的 Caddyfile 末尾写 `import /etc/caddy/sites/*.caddy`，并把服务器本地的
+   `deploy/sites` 目录只读挂载到 `/etc/caddy/sites`；站点块写在该目录的 `.caddy` 文件里（不进网关的 Git），
+   改完后在网关项目目录执行 `docker compose restart <网关服务名>`。
+
+   本项目当前所在的服务器即按此方式配置：网关为 ERP 项目（`/opt/caigou-baoguan-kaipiao`，
+   compose 项目 `purchase-customs-app`，服务 `web`），装箱网站的站点块在
+   `/opt/caigou-baoguan-kaipiao/deploy/sites/hoteches.caddy` 中。改转发规则只改这个文件，然后：
+
    ```bash
-   docker exec <网关容器名> caddy reload --config /etc/caddy/Caddyfile
+   cd /opt/caigou-baoguan-kaipiao && sudo docker compose restart web
    ```
 
-   如果 Caddyfile 是打包在网关镜像里的（`docker inspect <网关容器名>` 的 Mounts 中没有 Caddyfile），
-   不必重建网关镜像，可以把改好的配置复制进正在运行的容器再热加载，ERP 等其他站点不会中断：
-
-   ```bash
-   docker cp <网关容器名>:/etc/caddy/Caddyfile /tmp/Caddyfile      # 取出当前生效的配置
-   nano /tmp/Caddyfile                                             # 在末尾加上上面的站点块
-   docker cp /tmp/Caddyfile <网关容器名>:/etc/caddy/Caddyfile
-   docker exec <网关容器名> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-   docker exec <网关容器名> caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-   ```
-
-   复制进容器的修改在网关容器被重新创建后会丢失，所以请把同样的站点块也加到网关项目源码里的 Caddyfile，
-   以后重建网关时自然保留。
+   不要改网关的 `deploy/Caddyfile`；也不要用 `docker cp` 往网关容器里复制配置（`sites` 目录为只读挂载）。
 
 4. 把子域名的 A 记录解析到服务器 IP，Caddy 会自动申请 HTTPS 证书。
 
 资源上限可在 `.env` 中用 `LOADER_MEM_LIMIT`、`LOADER_CPUS`、`LOADER_MAX_RUNNING` 调整。
+
+### 共用网关时更新版本
+
+只要容器名 `hyt-loader`、端口 `8000` 和所在网络不变，更新装箱网站不需要改网关配置、不需要重启或重建网关：
+
+```bash
+cd ~/hyt-loader
+git pull
+sudo docker compose -f docker-compose.shared.yml up -d --build
+```
+
+如果网关项目的 Docker 网络被删除后重新创建，装箱网站会与新网络断开，访问出现 502；
+在装箱网站目录执行 `sudo docker compose -f docker-compose.shared.yml up -d --force-recreate` 重新接入即可。
 
 ## 已有 nginx 时
 

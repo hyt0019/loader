@@ -4,6 +4,13 @@
 # 用法（在仓库根目录）：
 #   GATEWAY_NETWORK=<网关容器所在的网络名> docker compose -f docker-compose.shared.yml up -d --build
 # 也可以把 GATEWAY_NETWORK 等变量写进 .env。
+#
+# 网关按容器名 hyt-loader、端口 8000 转发：改动容器名、端口或网络时，需要同步修改网关的站点配置。
+
+# 固定 compose 项目名：不随仓库目录名变化，也不会被网关项目的
+# `docker compose up --remove-orphans` 当成孤儿容器删除
+name: hyt-loader
+
 services:
   loader:
     build:
